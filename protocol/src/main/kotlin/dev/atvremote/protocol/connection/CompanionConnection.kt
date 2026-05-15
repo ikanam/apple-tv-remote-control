@@ -12,7 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.ByteArrayOutputStream
 import java.net.Socket
 
-class CompanionConnection(private val host: String, private val port: Int) {
+class CompanionConnection(private val host: String, private val port: Int) : FrameTransport {
 
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
@@ -35,10 +35,10 @@ class CompanionConnection(private val host: String, private val port: Int) {
     }
 
     /** Returns the SharedFlow of decoded (FrameType, payload) pairs. */
-    fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames
+    override fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames
 
     /** Encodes and sends a frame; safe to call from any coroutine. */
-    suspend fun send(type: FrameType, payload: ByteArray) {
+    override suspend fun send(type: FrameType, payload: ByteArray) {
         sendMutex.withLock {
             val encoded = Frame.encode(type, payload, cipher)
             withContext(Dispatchers.IO) {

@@ -1,0 +1,169 @@
+package dev.atvremote.protocol.connection
+
+import dev.atvremote.protocol.frame.FrameType
+import dev.atvremote.protocol.opack.Opack
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.random.Random
+
+class ProtocolException(message: String) : Exception(message)
+
+/**
+ * Minimal interface required by [CompanionProtocol].
+ * Both [CompanionConnection] and the test [FakeConnection] implement this.
+ */
+interface FrameTransport {
+    suspend fun send(type: FrameType, payload: ByteArray)
+    fun frames(): SharedFlow<Pair<FrameType, ByteArray>>
+}
+
+/**
+ * Protocol layer on top of a [FrameTransport]:
+ * - Request/response correlation via `_x` (XID)
+ * - Event fan-out for `_t == 1` messages
+ * - Auth exchange (pairing: PS/PV frame pairs)
+ */
+class CompanionProtocol(private val conn: FrameTransport) {
+
+    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+
+    // XID counter, starting at a random value in [0, 65535]
+    private var xid: Int = Random.nextInt(0, 65536)
+
+    // Pending exchange deferreds keyed by Long XID (as Opack decodes ints as Long)
+    private val pending = ConcurrentHashMap<Long, CompletableDeferred<Map<String, Any?>>>()
+
+    // Pending auth deferred: only one at a time; keyed by expected response FrameType
+    private val pendingAuth = ConcurrentHashMap<FrameType, CompletableDeferred<Map<String, Any?>>>()
+
+    // Events flow for inbound _t == 1 messages
+    private val _events = MutableSharedFlow<Pair<String, Map<String, Any?>>>(
+        replay = 0,
+        extraBufferCapacity = 64
+    )
+    val events: SharedFlow<Pair<String, Map<String, Any?>>> = _events.asSharedFlow()
+
+    init {
+        // Start the internal collector before any exchange/send calls
+        scope.launch { collectFrames() }
+    }
+
+    /**
+     * Builds and sends a request, then suspends until the matching response arrives.
+     * Timeout: 5 seconds.
+     */
+    suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
+        val myXid = xid++
+        val myXidLong = myXid.toLong()
+        val payload = Opack.pack(
+            mapOf("_i" to name, "_t" to 2, "_c" to content, "_x" to myXid)
+        )
+        val deferred = CompletableDeferred<Map<String, Any?>>()
+        pending[myXidLong] = deferred
+        try {
+            conn.send(FrameType.E_OPACK, payload)
+            return withTimeout(5_000) { deferred.await() }
+        } finally {
+            pending.remove(myXidLong)
+        }
+    }
+
+    /**
+     * Sends a one-way event (no wait for response).
+     */
+    suspend fun sendEvent(name: String, content: Map<String, Any?>) {
+        val payload = Opack.pack(
+            mapOf("_i" to name, "_t" to 1, "_c" to content)
+        )
+        conn.send(FrameType.E_OPACK, payload)
+    }
+
+    /**
+     * Sends a pairing frame and awaits the corresponding response frame.
+     * Mapping: PS_Start → PS_Next, PV_Start → PV_Next, else same type.
+     */
+    suspend fun sendAuth(type: FrameType, opack: Map<String, Any?>): Map<String, Any?> {
+        val responseType = when (type) {
+            FrameType.PS_Start -> FrameType.PS_Next
+            FrameType.PV_Start -> FrameType.PV_Next
+            else -> type
+        }
+        val payload = Opack.pack(opack)
+        val deferred = CompletableDeferred<Map<String, Any?>>()
+        pendingAuth[responseType] = deferred
+        try {
+            conn.send(type, payload)
+            return withTimeout(5_000) { deferred.await() }
+        } finally {
+            pendingAuth.remove(responseType)
+        }
+    }
+
+    /** Cancels the internal collector scope. */
+    fun close() {
+        scope.cancel()
+    }
+
+    // ---- private ----
+
+    private suspend fun collectFrames() {
+        conn.frames().collect { (frameType, payload) ->
+            when (frameType) {
+                FrameType.E_OPACK -> handleOpack(payload)
+                FrameType.PS_Next, FrameType.PV_Next -> handleAuth(frameType, payload)
+                else -> {
+                    // Other frame types: try auth deferred first (same-type fallback)
+                    if (pendingAuth.containsKey(frameType)) {
+                        handleAuth(frameType, payload)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun handleOpack(payload: ByteArray) {
+        val dict = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            Opack.unpack(payload).first as? Map<String, Any?>
+        }.getOrNull() ?: return
+
+        val tRaw = dict["_t"]
+        val t = (tRaw as? Number)?.toInt() ?: return
+
+        when (t) {
+            3 -> {
+                // Response to an exchange
+                val xidRaw = dict["_x"] ?: return
+                val xidLong = (xidRaw as? Number)?.toLong() ?: return
+                val deferred = pending[xidLong] ?: return
+                val em = dict["_em"]
+                if (em != null) {
+                    deferred.completeExceptionally(ProtocolException("Command failed: $em"))
+                } else {
+                    deferred.complete(dict)
+                }
+            }
+            1 -> {
+                // Inbound event
+                val name = dict["_i"] as? String ?: return
+                @Suppress("UNCHECKED_CAST")
+                val content = dict["_c"] as? Map<String, Any?> ?: emptyMap()
+                // Non-blocking emit; if the buffer is full we drop (extraBufferCapacity=64)
+                _events.tryEmit(Pair(name, content))
+            }
+            else -> { /* ignore other _t values */ }
+        }
+    }
+
+    private fun handleAuth(frameType: FrameType, payload: ByteArray) {
+        val deferred = pendingAuth[frameType] ?: return
+        val dict = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            Opack.unpack(payload).first as? Map<String, Any?>
+        }.getOrNull() ?: return
+        deferred.complete(dict)
+    }
+}
