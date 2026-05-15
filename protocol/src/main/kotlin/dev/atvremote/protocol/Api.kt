@@ -1,5 +1,6 @@
 package dev.atvremote.protocol
 
+import dev.atvremote.protocol.discovery.JmdnsDiscovery
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -62,7 +63,7 @@ interface PairingHandle {
 }
 
 object AppleTvRemote {
-    fun discovery(): DeviceDiscovery = throw NotImplementedError("Task 15")
+    fun discovery(): DeviceDiscovery = JmdnsDiscovery()
     fun pair(device: AppleTvDevice): PairingHandle = throw NotImplementedError("Task 16")
     suspend fun connect(device: AppleTvDevice, credentials: HapCredentials): CompanionSession =
         RemoteConnect.connect(device, credentials)
