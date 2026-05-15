@@ -65,5 +65,5 @@ object AppleTvRemote {
     fun discovery(): DeviceDiscovery = throw NotImplementedError("Task 15")
     fun pair(device: AppleTvDevice): PairingHandle = throw NotImplementedError("Task 16")
     suspend fun connect(device: AppleTvDevice, credentials: HapCredentials): CompanionSession =
-        throw NotImplementedError("Task 14")
+        RemoteConnect.connect(device, credentials)
 }
