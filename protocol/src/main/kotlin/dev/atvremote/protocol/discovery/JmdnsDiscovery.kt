@@ -97,10 +97,10 @@ private fun buildNicCandidates(): List<NicCandidate> {
  *
  * ## Override mechanisms (highest to lowest precedence)
  *
- * 1. **Constructor param** `bindAddress` — pass an explicit [InetAddress] (useful in tests
+ * 1. **Env var** `ATVREMOTE_MDNS_ADDR` — set to a dotted IPv4 string (e.g. `192.168.7.131`);
+ *    takes effect without code changes (highest precedence, e.g. for CI/CD).
+ * 2. **Constructor param** `bindAddress` — pass an explicit [InetAddress] (useful in tests
  *    or when the auto-detection heuristic picks the wrong NIC).
- * 2. **Env var** `ATVREMOTE_MDNS_ADDR` — set to a dotted IPv4 string (e.g. `192.168.7.131`);
- *    takes effect without code changes.
  * 3. **Auto-detection** via [selectBindAddress] — scans live NICs and returns the first
  *    routable LAN IPv4, excluding VPN (`utun`), loopback, virtual, link-local, and other
  *    non-LAN interfaces.

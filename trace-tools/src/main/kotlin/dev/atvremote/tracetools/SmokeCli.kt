@@ -6,7 +6,6 @@ import dev.atvremote.protocol.PairingState
 import dev.atvremote.protocol.RemoteButton
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
