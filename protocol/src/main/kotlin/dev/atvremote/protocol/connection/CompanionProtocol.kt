@@ -2,12 +2,13 @@ package dev.atvremote.protocol.connection
 
 import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.opack.Opack
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.random.Random
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import java.util.concurrent.ConcurrentHashMap
-import kotlin.random.Random
 
 class ProtocolException(message: String) : Exception(message)
 
@@ -30,8 +31,9 @@ class CompanionProtocol(private val conn: FrameTransport) {
 
     private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
-    // XID counter, starting at a random value in [0, 65535]
-    private var xid: Int = Random.nextInt(0, 65536)
+    // XID counter: atomic so concurrent exchange() calls never duplicate a correlation id.
+    // Masked to 16 bits on each use to stay within Companion's 16-bit _x field range.
+    private val xidCounter = AtomicInteger(Random.nextInt(0, 65536))
 
     // Pending exchange deferreds keyed by Long XID (as Opack decodes ints as Long)
     private val pending = ConcurrentHashMap<Long, CompletableDeferred<Map<String, Any?>>>()
@@ -56,7 +58,7 @@ class CompanionProtocol(private val conn: FrameTransport) {
      * Timeout: 5 seconds.
      */
     suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
-        val myXid = xid++
+        val myXid = xidCounter.getAndIncrement() and 0xFFFF
         val myXidLong = myXid.toLong()
         val payload = Opack.pack(
             mapOf("_i" to name, "_t" to 2, "_c" to content, "_x" to myXid)
@@ -163,7 +165,11 @@ class CompanionProtocol(private val conn: FrameTransport) {
         val dict = runCatching {
             @Suppress("UNCHECKED_CAST")
             Opack.unpack(payload).first as? Map<String, Any?>
-        }.getOrNull() ?: return
+        }.getOrNull()
+        if (dict == null) {
+            deferred.completeExceptionally(ProtocolException("Auth response unpack failed"))
+            return
+        }
         deferred.complete(dict)
     }
 }
