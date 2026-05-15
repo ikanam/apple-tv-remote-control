@@ -5,9 +5,11 @@ import dev.atvremote.protocol.connection.CompanionProtocol
 import dev.atvremote.protocol.crypto.Curves
 import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.pairing.PairVerify
+import dev.atvremote.protocol.pairing.PairingHandleImpl
 import dev.atvremote.protocol.session.CompanionSessionImpl
 import dev.atvremote.protocol.session.SessionHandshake
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
 /**
@@ -88,5 +90,30 @@ internal object RemoteConnect {
             runCatching { conn.close() }
             throw t
         }
+    }
+
+    /**
+     * Entry point for [AppleTvRemote.pair].
+     *
+     * Opens a real [CompanionConnection] to the Apple TV and returns a
+     * [PairingHandleImpl] driving HAP pair-setup over it. The locked
+     * [AppleTvRemote.pair] signature is non-suspend, so the (real-clock,
+     * Dispatchers.IO) socket connect is performed via [runBlocking] —
+     * consistent with [RemoteConnectTimeoutTest]'s real-clock convention; it
+     * returns once the TCP socket is established, before any PIN is submitted.
+     *
+     * The handle uses a fresh random Ed25519 seed + pairing id because the
+     * production [CompanionConnection] does not implement
+     * [dev.atvremote.protocol.pairing.PairingKeys] (only the scripted test
+     * double does).
+     *
+     * NOTE: this real-device pair path is NOT covered by unit tests — only the
+     * scripted golden path (`PairingHandleTest`) is. End-to-end validation on a
+     * real Apple TV is deferred to **Task 17** (CLI smoke test).
+     */
+    fun pair(device: AppleTvDevice): PairingHandle {
+        val conn = CompanionConnection(device.host, device.port)
+        runBlocking { conn.connect() }
+        return PairingHandleImpl(conn)
     }
 }

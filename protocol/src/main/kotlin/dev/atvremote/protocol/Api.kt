@@ -64,7 +64,7 @@ interface PairingHandle {
 
 object AppleTvRemote {
     fun discovery(): DeviceDiscovery = JmdnsDiscovery()
-    fun pair(device: AppleTvDevice): PairingHandle = throw NotImplementedError("Task 16")
+    fun pair(device: AppleTvDevice): PairingHandle = RemoteConnect.pair(device)
     suspend fun connect(device: AppleTvDevice, credentials: HapCredentials): CompanionSession =
         RemoteConnect.connect(device, credentials)
 }
