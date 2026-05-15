@@ -9,4 +9,15 @@ class OpackDecodeTest {
         assertEquals(listOf(1L, "x", true), rt(listOf(1, "x", true)))
         assertEquals(mapOf("_i" to "_systemInfo", "_t" to 2L), rt(mapOf("_i" to "_systemInfo", "_t" to 2)))
     }
+    @Test fun backRefsWithMultipleDistinctRepeats() {
+        // distinct long strings (>1 packed byte) repeated in interleaved order
+        val v = listOf("alpha-key", "beta-key", "alpha-key", "gamma-key", "beta-key", "gamma-key")
+        assertEquals(v.map { it as Any? }, Opack.unpack(Opack.pack(v)).first)
+        // nested map with repeated keys like real protocol frames
+        val m = mapOf("_i" to "_systemInfo", "_t" to 2,
+            "_c" to mapOf("_i" to "child", "_t" to 3, "_x" to 7))
+        val expected = mapOf<String,Any?>("_i" to "_systemInfo", "_t" to 2L,
+            "_c" to mapOf<String,Any?>("_i" to "child", "_t" to 3L, "_x" to 7L))
+        assertEquals(expected, Opack.unpack(Opack.pack(m)).first)
+    }
 }

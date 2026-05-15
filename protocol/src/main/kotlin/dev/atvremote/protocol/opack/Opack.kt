@@ -165,14 +165,13 @@ object Opack {
             // back-ref short: 0xA0..0xC0  (index = tag - 0xA0, range 0..32)
             tag in 0xA0..0xC0 -> {
                 val idx = tag - 0xA0
-                val (refVal, _) = decode(ol.get(idx), 0, ol)
-                Pair(refVal, off + 1)
+                Pair(ol.get(idx), off + 1)
             }
             // back-ref long: 0xC1(1B) 0xC2(2B) 0xC3(4B) 0xC4(8B) LE index
-            tag == 0xC1 -> { val idx = leRead(data, off + 1, 1).toInt(); val (v, _) = decode(ol.get(idx), 0, ol); Pair(v, off + 2) }
-            tag == 0xC2 -> { val idx = leRead(data, off + 1, 2).toInt(); val (v, _) = decode(ol.get(idx), 0, ol); Pair(v, off + 3) }
-            tag == 0xC3 -> { val idx = leRead(data, off + 1, 4).toInt(); val (v, _) = decode(ol.get(idx), 0, ol); Pair(v, off + 5) }
-            tag == 0xC4 -> { val idx = leRead(data, off + 1, 8).toInt(); val (v, _) = decode(ol.get(idx), 0, ol); Pair(v, off + 9) }
+            tag == 0xC1 -> { val idx = leRead(data, off + 1, 1).toInt(); Pair(ol.get(idx), off + 2) }
+            tag == 0xC2 -> { val idx = leRead(data, off + 1, 2).toInt(); Pair(ol.get(idx), off + 3) }
+            tag == 0xC3 -> { val idx = leRead(data, off + 1, 4).toInt(); Pair(ol.get(idx), off + 5) }
+            tag == 0xC4 -> { val idx = leRead(data, off + 1, 8).toInt(); Pair(ol.get(idx), off + 9) }
             // array 0xD0..0xDF
             tag in 0xD0..0xDF -> {
                 val nibble = tag and 0x0F
@@ -231,7 +230,7 @@ object Opack {
         val sliceLen = newOff - startOff
         val isBackRef = tag in 0xA0..0xC4
         if (sliceLen > 1 && !isBackRef) {
-            ol.add(data.copyOfRange(startOff, newOff))
+            ol.add(value)
         }
 
         return Pair(value, newOff)
@@ -244,10 +243,10 @@ object Opack {
         return result
     }
 
-    /** Decoder-side object list: stores packed byte-slices in document order. */
+    /** Decoder-side object list: stores decoded values in document order, mirroring encoder ObjectList population. */
     private class DecoderObjectList {
-        private val items = ArrayList<ByteArray>()
-        fun add(b: ByteArray) { items.add(b) }
-        fun get(idx: Int): ByteArray = items[idx]
+        private val items = ArrayList<Any?>()
+        fun add(v: Any?) { items.add(v) }
+        fun get(idx: Int): Any? = items[idx]
     }
 }
