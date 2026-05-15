@@ -6,6 +6,7 @@ import dev.atvremote.protocol.PairingState
 import dev.atvremote.protocol.RemoteButton
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -46,8 +47,16 @@ import kotlin.system.exitProcess
 private val defaultFile: File =
     File(System.getProperty("user.home"), ".atvremote/credentials")
 
-/** Timeout (ms) for mDNS discovery's first emission. */
+/** Timeout (ms) for mDNS discovery's first emission (used by pair/menu). */
 private const val DISCOVERY_TIMEOUT_MS = 8_000L
+
+/**
+ * Window (ms) during which `scan` collects ALL arriving discovery emissions
+ * before printing the final accumulated device set. Using a bounded window
+ * rather than `first { isNotEmpty() }` ensures that a slightly-later-resolving
+ * Apple TV (e.g., after a Mac companion-link peer has already resolved) is not missed.
+ */
+private const val SCAN_WINDOW_MS = 10_000L
 
 /** Timeout (ms) for pair-setup to reach a terminal state. */
 private const val PAIR_TIMEOUT_MS = 60_000L
@@ -76,14 +85,28 @@ private suspend fun discover(): List<AppleTvDevice> {
 }
 
 private suspend fun cmdScan() {
-    println("Scanning for Apple TV devices (${DISCOVERY_TIMEOUT_MS / 1000}s)…")
-    val devices = discover()
-    if (devices.isEmpty()) {
+    println("Scanning for Apple TV devices (${SCAN_WINDOW_MS / 1000}s)…")
+    // Collect ALL emissions for the full window so a slightly-later-resolving
+    // Apple TV is not missed because a faster companion-link peer arrived first.
+    var latest: List<AppleTvDevice> = emptyList()
+    withTimeoutOrNull(SCAN_WINDOW_MS) {
+        AppleTvRemote.discovery().devices().collect { list ->
+            latest = list
+        }
+    }
+    if (latest.isEmpty()) {
         println("no devices found")
         return
     }
-    for (d in devices) {
-        println("${d.id}\t${d.name}\t${d.host}:${d.port}\t${d.model ?: "-"}\t${d.pairable}")
+    println("%-40s  %-20s  %-22s  %-14s  %s".format("id", "name", "host:port", "model", "pairable"))
+    for (d in latest) {
+        println("%-40s  %-20s  %-22s  %-14s  %s".format(
+            d.id,
+            d.name,
+            "${d.host}:${d.port}",
+            d.model ?: "-",
+            d.pairable,
+        ))
     }
 }
 
