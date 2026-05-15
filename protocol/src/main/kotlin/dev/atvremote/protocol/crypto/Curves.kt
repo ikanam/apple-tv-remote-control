@@ -25,4 +25,7 @@ object Curves {
     }
     fun x25519(priv: ByteArray, peerPub: ByteArray): ByteArray =
         ByteArray(32).also { X25519.scalarMult(priv, 0, peerPub, 0, it, 0) }
+    /** X25519 public key for a (already clamped) private scalar: priv·basepoint. */
+    fun x25519Base(priv: ByteArray): ByteArray =
+        ByteArray(32).also { X25519.scalarMultBase(priv, 0, it, 0) }
 }
