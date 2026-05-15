@@ -1,0 +1,24 @@
+# Superpowers brainstorm visual companion (local-only mockups)
+.superpowers/
+
+# Android / Gradle
+*.iml
+.gradle/
+/local.properties
+/.idea/
+/build/
+**/build/
+/captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.keystore
+*.jks
+
+# Kotlin / JVM
+*.class
+*.log
+
+# macOS
+.DS_Store
