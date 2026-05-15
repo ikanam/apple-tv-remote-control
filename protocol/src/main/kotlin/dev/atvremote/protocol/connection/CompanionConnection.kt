@@ -76,11 +76,29 @@ class CompanionConnection(private val host: String, private val port: Int) : Fra
                 if (n == -1) break          // EOF — peer closed
                 accumulator.write(tmp, 0, n)
 
-                // Drain all complete frames from the accumulated buffer
+                // Drain all complete frames from the accumulated buffer.
                 var buf = accumulator.toByteArray()
                 var consumed = true
                 while (consumed) {
-                    val result = Frame.decode(buf, cipher)
+                    // The 4-byte header (type + 3-byte BE length) is plaintext,
+                    // so a frame's total size is known without decrypting. A
+                    // decode/decrypt failure of ONE frame must not kill the
+                    // reader: resync past it by its declared length and keep
+                    // going. (Companion is length-prefixed, so this is safe.)
+                    if (buf.size < Frame.HEADER) break
+                    val len = ((buf[1].toInt() and 0xFF) shl 16) or
+                        ((buf[2].toInt() and 0xFF) shl 8) or (buf[3].toInt() and 0xFF)
+                    val total = Frame.HEADER + len
+                    if (buf.size < total) break // wait for the rest of this frame
+                    val result = try {
+                        Frame.decode(buf, cipher)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Throwable) {
+                        // Undecodable/undecryptable frame — skip it, stay alive.
+                        buf = buf.copyOfRange(total, buf.size)
+                        continue
+                    }
                     if (result != null) {
                         val (type, body, bytesConsumed) = result
                         _frames.emit(Pair(type, body))

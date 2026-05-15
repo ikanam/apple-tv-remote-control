@@ -93,11 +93,15 @@ Bugs fixed (all real-device validated; each has a TDD regression test):
   Now sends `{ _srvT:"com.apple.tvremoteservices", _sid:<combined sid> }`
   (`SessionHandshake.sid` threaded into `CompanionSessionImpl`).
 
-Known robustness follow-up (non-blocking, NOT yet fixed):
-`CompanionConnection.readLoop`'s `catch (_: Exception) {}` silently swallows a
-decode/decrypt failure and kills the reader (masked the C-chain during
-debugging). Also `Frame.decode` decrypts ALL frames once `cipher!=null` (it
-should only decrypt session/E_OPACK frames). Neither blocks the happy path.
+Robustness: ✅ FIXED. `CompanionConnection.readLoop` no longer dies on a bad
+frame — a decode/decrypt failure of one frame is skipped (resync by the
+plaintext-header length; Companion is length-prefixed) and the reader keeps
+going (regression test
+`CompanionConnectionTest.readLoopSkipsUndecryptableFrameAndContinues`). Note:
+`Frame.decode` decrypting every frame once `cipher!=null` is intentional —
+pyatv does the same (`if self._chacha and len>0`); correct given the C3
+ordering fix, so it is NOT changed (changing it would diverge from the
+authoritative reference).
 
 ## Resume checklist (next session)
 1. `git pull` (work is on `main` @ origin).
@@ -106,8 +110,8 @@ should only decrypt session/E_OPACK frames). Neither blocks the happy path.
 3. Re-confirm real device: `scan` → `客厅 … AppleTV14,1 … true`; then
    `pair "客厅@192.168.7.134:49153"` (type the PIN shown on the TV) →
    `Paired`; then `menu "客厅@..."` → `OK` + TV reacts.
-4. Optional next work: the readLoop-swallow / decrypt-all robustness
-   follow-up; replace synthetic fixtures with a real pyatv capture per
-   `trace-tools/.../CaptureGuide.md`; then Plan 2.
+4. Optional next work: replace synthetic fixtures with a real pyatv capture
+   per `trace-tools/.../CaptureGuide.md` (makes the golden tests a real-device
+   baseline); then Plan 2 (companion command set).
 5. Project memory: `/Users/shinya/.claude/projects/-Users-shinya-Downloads-apple-tv-controller/memory/`
    (`MEMORY.md` index).

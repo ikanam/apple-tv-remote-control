@@ -1,14 +1,68 @@
 package dev.atvremote.protocol.connection
+import dev.atvremote.protocol.crypto.ChaCha
 import dev.atvremote.protocol.frame.Frame
 import dev.atvremote.protocol.frame.FrameType
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.test.runTest
+import org.junit.jupiter.api.Timeout
 import java.net.ServerSocket
+import java.util.concurrent.TimeUnit
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 class CompanionConnectionTest {
+
+    /**
+     * Robustness regression: a single undecodable/undecryptable inbound frame
+     * must NOT kill the read loop. Companion framing is length-prefixed with a
+     * plaintext header, so the reader can resync past a bad frame and keep
+     * delivering subsequent valid frames. (Before this, `readLoop`'s
+     * `catch (_: Exception) {}` swallowed the decrypt failure and silently
+     * killed the reader — which masked the entire Task-17 Bug C chain.)
+     *
+     * Real-clock `runBlocking` + JUnit `@Timeout` (not `runTest` virtual time)
+     * because the read loop runs on real `Dispatchers.IO`.
+     */
+    @Test
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
+    fun readLoopSkipsUndecryptableFrameAndContinues() = runBlocking {
+        val key = ByteArray(32) { (it + 1).toByte() }
+        val server = ServerSocket(0)
+        // Server-side cipher: outKey == the connection's inKey, so counters stay
+        // aligned (every frame, good or corrupt, spends one counter each side).
+        val sc = ChaCha(key, key)
+        val b0 = byteArrayOf(0xA0.toByte(), 0xA1.toByte())
+        val b2 = byteArrayOf(0xC0.toByte(), 0xC1.toByte(), 0xC2.toByte())
+        val f0 = Frame.encode(FrameType.E_OPACK, b0, sc)                      // counter 0
+        val f1 = Frame.encode(FrameType.E_OPACK, byteArrayOf(1, 2, 3, 4), sc) // counter 1
+        f1[f1.size - 1] = (f1[f1.size - 1] + 1).toByte()                      // corrupt tag → decrypt throws
+        val f2 = Frame.encode(FrameType.E_OPACK, b2, sc)                      // counter 2
+
+        val gate = CompletableDeferred<Unit>()
+        val job = launch(Dispatchers.IO) {
+            val s = server.accept()
+            gate.await() // wait until the connection enabled encryption
+            s.getOutputStream().apply { write(f0); write(f1); write(f2); flush() }
+        }
+        val conn = CompanionConnection("127.0.0.1", server.localPort)
+        conn.connect()
+        conn.enableEncryption(key, key)
+        gate.complete(Unit)
+
+        // The corrupt f1 must be skipped; f0 and f2 must both be delivered.
+        val got = withTimeoutOrNull(5_000) { conn.frames().take(2).toList() }
+            ?: error("read loop died on a bad frame — fewer than 2 frames delivered")
+        assertEquals(2, got.size)
+        assertTrue(got[0].second.contentEquals(b0), "first valid frame must arrive")
+        assertTrue(got[1].second.contentEquals(b2),
+            "the valid frame AFTER the corrupt one must still arrive")
+        conn.close(); job.cancel(); server.close()
+    }
+
     @Test fun receivesFramedPayload() = runTest {
         val server = ServerSocket(0)
         val job = launch(Dispatchers.IO) {
