@@ -2,6 +2,10 @@ plugins { alias(libs.plugins.kotlin.jvm); application }
 dependencies {
     implementation(project(":protocol"))
     implementation(libs.coroutines.core)
+    // Silence jmDNS's "No SLF4J providers were found" startup banner with the
+    // no-op binding. Runtime-only and CLI-only (the :protocol library must not
+    // impose a logging binding on Plan 3's Android app).
+    runtimeOnly(libs.slf4j.nop)
     testImplementation(kotlin("test"))
 }
 application { mainClass.set("dev.atvremote.tracetools.SmokeCliKt") }
