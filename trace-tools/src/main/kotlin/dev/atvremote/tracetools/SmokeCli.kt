@@ -1,10 +1,13 @@
 package dev.atvremote.tracetools
 
+import dev.atvremote.protocol.AppleTvDevice
 import dev.atvremote.protocol.AppleTvRemote
 import dev.atvremote.protocol.PairingState
 import dev.atvremote.protocol.RemoteButton
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import kotlin.system.exitProcess
@@ -65,7 +68,7 @@ private fun err(msg: String, code: Int = 1): Nothing {
  * Discover devices (bounded by [DISCOVERY_TIMEOUT_MS]).
  * Returns the first non-empty list, or an empty list on timeout / no devices.
  */
-private suspend fun discover(): List<dev.atvremote.protocol.AppleTvDevice> {
+private suspend fun discover(): List<AppleTvDevice> {
     val result = withTimeoutOrNull(DISCOVERY_TIMEOUT_MS) {
         AppleTvRemote.discovery().devices().first { it.isNotEmpty() }
     }
@@ -94,14 +97,11 @@ private suspend fun cmdPair(id: String) {
     val handle = AppleTvRemote.pair(device)
 
     val completed = withTimeoutOrNull(PAIR_TIMEOUT_MS) {
-        // Wait for AwaitingPin
-        handle.state.first { it is PairingState.AwaitingPin || it is PairingState.Completed || it is PairingState.Failed }
-
-        when (val s = handle.state.value) {
+        when (val s = handle.state.first { it is PairingState.AwaitingPin || it is PairingState.Completed || it is PairingState.Failed }) {
             is PairingState.AwaitingPin -> {
                 print("Enter PIN shown on TV: ")
                 System.out.flush()
-                val pin = readlnOrNull() ?: err("no PIN entered; aborting")
+                val pin = readlnOrNull() ?: run { handle.cancel(); err("no PIN entered; aborting") }
                 handle.submitPin(pin)
                 // Now wait for terminal state
                 handle.state.first { it is PairingState.Completed || it is PairingState.Failed }
@@ -144,7 +144,7 @@ private suspend fun cmdMenu(id: String) {
             session.button(RemoteButton.Menu, true)
             session.button(RemoteButton.Menu, false)
         } finally {
-            session.close()
+            withContext(NonCancellable) { session.close() }
         }
     }
 

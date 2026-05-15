@@ -2,6 +2,7 @@ package dev.atvremote.tracetools
 
 import dev.atvremote.protocol.HapCredentials
 import java.nio.file.Files
+import org.junit.jupiter.api.AfterEach
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
@@ -21,6 +22,14 @@ class CredentialStoreTest {
     private val atvId     = byteArrayOf(0xA1.toByte(), 0xB2.toByte(), 0xC3.toByte())
     private val atvLtpk   = ByteArray(32) { (it + 64).toByte() }
 
+    private val tempDirs = mutableListOf<java.io.File>()
+
+    @AfterEach
+    fun cleanUpTempDirs() {
+        tempDirs.forEach { it.deleteRecursively() }
+        tempDirs.clear()
+    }
+
     private fun knownCreds() = HapCredentials(
         clientId  = clientId,
         clientLtsk = clientLtsk,
@@ -29,8 +38,11 @@ class CredentialStoreTest {
         atvLtpk   = atvLtpk,
     )
 
+    private fun tempDir(prefix: String): java.io.File =
+        Files.createTempDirectory(prefix).toFile().also { tempDirs += it }
+
     private fun tempFile(): java.io.File {
-        val dir = Files.createTempDirectory("credential-store-test").toFile()
+        val dir = tempDir("credential-store-test")
         return java.io.File(dir, "credentials")
     }
 
@@ -98,7 +110,7 @@ class CredentialStoreTest {
 
     @Test
     fun `load returns null when file does not exist`() {
-        val dir   = Files.createTempDirectory("credential-store-nofile").toFile()
+        val dir   = tempDir("credential-store-nofile")
         val file  = java.io.File(dir, "nonexistent/credentials")
         val store = CredentialStore(file)
 
@@ -109,7 +121,7 @@ class CredentialStoreTest {
 
     @Test
     fun `save creates parent directories if they do not exist`() {
-        val dir   = Files.createTempDirectory("credential-store-mkdir").toFile()
+        val dir   = tempDir("credential-store-mkdir")
         val file  = java.io.File(dir, "nested/deep/credentials")
         val store = CredentialStore(file)
 
