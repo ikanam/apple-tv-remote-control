@@ -1,7 +1,12 @@
 plugins { alias(libs.plugins.kotlin.jvm); application }
-dependencies { implementation(project(":protocol")); implementation(libs.coroutines.core) }
+dependencies {
+    implementation(project(":protocol"))
+    implementation(libs.coroutines.core)
+    testImplementation(kotlin("test"))
+}
 application { mainClass.set("dev.atvremote.tracetools.SmokeCliKt") }
 kotlin { jvmToolchain(17) }
+tasks.test { useJUnitPlatform() }
 
 // Dedicated entry point for the SYNTHETIC golden-trace generator (Task 10).
 // Runs the in-repo reference oracle end-to-end self-check, then (re)writes the
