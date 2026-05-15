@@ -11,7 +11,7 @@ import dev.atvremote.protocol.connection.CommandChannel
  *
  *  1. `_systemInfo`   — device capabilities advertisement
  *  2. `_touchStart`   — touch-surface registration
- *  3. `_sessionStart` — combined session-ID negotiation (local xor remote)
+ *  3. `_sessionStart` — combined session-ID negotiation: (remoteSid shl 32) or localSid
  *  4. `_tiStart`      — touch-interface init
  *  5. `_interest`     — subscribe to media-control events (`_iMC`)
  *
@@ -47,6 +47,8 @@ class SessionHandshake(
     var sid: Long = 0L
         private set
 
+    private var ran = false
+
     /**
      * Executes the five-step handshake in order.
      * Must be called exactly once after HAP pair-verify succeeds.
@@ -55,6 +57,8 @@ class SessionHandshake(
      *   does not contain a `_sid` field inside `_c`.
      */
     suspend fun run() {
+        check(!ran) { "SessionHandshake.run() must be called exactly once" }
+        ran = true
         // 1. Advertise system capabilities.
         // Field values ported from pyatv CompanionAPI.connect; pending real-device
         // validation in Task 17. `_i` uses clientId as a deterministic placeholder
@@ -97,7 +101,7 @@ class SessionHandshake(
         @Suppress("UNCHECKED_CAST")
         val contentMap = sessionStartResp["_c"] as? Map<*, *>
             ?: error("SessionHandshake: _sessionStart response missing '_c' map")
-        val remoteSid = contentMap["_sid"] as? Long
+        val remoteSid = (contentMap["_sid"] as? Number)?.toLong()
             ?: error("SessionHandshake: _sessionStart response '_c._sid' is absent or not a Long " +
                      "(got ${contentMap["_sid"]?.let { "${it::class.simpleName}($it)" } ?: "null"})")
         sid = (remoteSid shl 32) or localSid

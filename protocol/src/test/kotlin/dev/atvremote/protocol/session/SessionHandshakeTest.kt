@@ -16,6 +16,8 @@ class RecordingProtocol(
     private val rec: MutableList<String>,
     private val respond: (name: String) -> Map<String, Any?>,
 ) : CommandChannel {
+    val events = mutableListOf<Pair<String, Map<String, Any?>>>()
+
     override suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
         rec += name
         return respond(name)
@@ -23,6 +25,7 @@ class RecordingProtocol(
 
     override suspend fun sendEvent(name: String, content: Map<String, Any?>) {
         // Events are not recorded in 'rec' per the locked test (only 4 exchange calls checked)
+        events += (name to content)
     }
 }
 
@@ -32,5 +35,8 @@ class SessionHandshakeTest {
         val proto = RecordingProtocol(rec) { name -> mapOf("_c" to mapOf("_sid" to 42L)) }
         SessionHandshake(proto, deviceId = "dev", clientId = "cli", name = "Pixel", model = "Pixel 8").run()
         assertEquals(listOf("_systemInfo", "_touchStart", "_sessionStart", "_tiStart"), rec.take(4))
+        assertEquals(listOf("_interest"), proto.events.map { it.first })
+        @Suppress("UNCHECKED_CAST")
+        assertEquals(listOf("_iMC"), proto.events.single().second["_regEvents"])
     }
 }
