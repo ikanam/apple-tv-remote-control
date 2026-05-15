@@ -78,7 +78,6 @@ class Srp(authPrivateSeed: ByteArray) {
 
     private var pin: String = ""
     private var aPub: BigInteger = BigInteger.ZERO
-    private var premaster: BigInteger? = null
     private var key: ByteArray? = null
     private var m1: ByteArray? = null
 
@@ -136,19 +135,20 @@ class Srp(authPrivateSeed: ByteArray) {
         val base = bPub.subtract(k.multiply(g.modPow(x, N))).mod(N)
         val exp = a.add(u.multiply(x))
         val s = base.modPow(exp, N)
-        premaster = s
 
         val kKey = sha512(unsigned(s))
         key = kKey
 
         // M1 = SHA512((H(N) XOR H(g)) || H("Pair-Setup") || salt || A || B || K)
+        // hnXorHg and hI are raw 64-byte digests — passed directly, not via bi()/unsigned()
+        // which would strip a leading 0x00 byte and yield a 63-byte operand.
         val hn = sha512(unsigned(N))
         val hg = sha512(unsigned(g))
         val hnXorHg = ByteArray(hn.size) { (hn[it].toInt() xor hg[it].toInt()).toByte() }
-        val hu = sha512("Pair-Setup".toByteArray(Charsets.US_ASCII))
+        val hI = sha512("Pair-Setup".toByteArray(Charsets.US_ASCII))
         val proof = sha512(
-            unsigned(bi(hnXorHg)),
-            unsigned(bi(hu)),
+            hnXorHg,
+            hI,
             salt,
             unsigned(aPub),
             unsigned(bPub),
