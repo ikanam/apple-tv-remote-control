@@ -5,7 +5,10 @@ import dev.atvremote.protocol.AppleTvRemote
 import dev.atvremote.protocol.PairingState
 import dev.atvremote.protocol.RemoteButton
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
+import kotlinx.coroutines.flow.mapNotNull
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -73,14 +76,25 @@ private fun err(msg: String, code: Int = 1): Nothing {
 }
 
 /**
- * Discover devices (bounded by [DISCOVERY_TIMEOUT_MS]).
- * Returns the first non-empty list, or an empty list on timeout / no devices.
+ * Awaits the first discovery emission that contains a device whose
+ * [AppleTvDevice.id] equals [id], bounded by [timeoutMs]. Returns that device,
+ * or `null` on timeout (or if the flow completes without ever containing it).
+ *
+ * [dev.atvremote.protocol.DeviceDiscovery.devices] emits a *cumulative
+ * snapshot* of all devices resolved so far on every resolve/remove. A naive
+ * `first { it.isNotEmpty() }` stops at the first non-empty snapshot — which on
+ * a multi-homed host is typically just the local Mac's own `_companion-link`
+ * advert (resolves near-instantly via the local mDNS cache) and does NOT yet
+ * contain the later-resolving remote Apple TV. `pair` / `menu` target a
+ * *specific* device by id, so we keep collecting snapshots until that id
+ * appears (or the timeout fires) instead of stopping at the first list.
  */
-private suspend fun discover(): List<AppleTvDevice> {
-    val result = withTimeoutOrNull(DISCOVERY_TIMEOUT_MS) {
-        AppleTvRemote.discovery().devices().first { it.isNotEmpty() }
-    }
-    return result ?: emptyList()
+internal suspend fun awaitDevice(
+    flow: Flow<List<AppleTvDevice>>,
+    id: String,
+    timeoutMs: Long,
+): AppleTvDevice? = withTimeoutOrNull(timeoutMs) {
+    flow.mapNotNull { list -> list.find { it.id == id } }.firstOrNull()
 }
 
 private suspend fun cmdScan() {
@@ -111,8 +125,7 @@ private suspend fun cmdScan() {
 
 private suspend fun cmdPair(id: String) {
     println("Scanning for Apple TV devices (${DISCOVERY_TIMEOUT_MS / 1000}s)…")
-    val devices = discover()
-    val device = devices.find { it.id == id }
+    val device = awaitDevice(AppleTvRemote.discovery().devices(), id, DISCOVERY_TIMEOUT_MS)
         ?: err("device '$id' not found in scan results; ensure the Apple TV is on the same network")
 
     val store = CredentialStore(defaultFile)
@@ -152,8 +165,7 @@ private suspend fun cmdPair(id: String) {
 
 private suspend fun cmdMenu(id: String) {
     println("Scanning for Apple TV devices (${DISCOVERY_TIMEOUT_MS / 1000}s)…")
-    val devices = discover()
-    val device = devices.find { it.id == id }
+    val device = awaitDevice(AppleTvRemote.discovery().devices(), id, DISCOVERY_TIMEOUT_MS)
         ?: err("device '$id' not found in scan results; ensure the Apple TV is on the same network")
 
     val store = CredentialStore(defaultFile)

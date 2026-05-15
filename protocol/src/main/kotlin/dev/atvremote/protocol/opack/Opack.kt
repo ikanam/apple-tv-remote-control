@@ -137,6 +137,11 @@ object Opack {
             tag == 0x31 -> Pair(leRead(data, off + 1, 2), off + 3)
             tag == 0x32 -> Pair(leRead(data, off + 1, 4), off + 5)
             tag == 0x33 -> Pair(leRead(data, off + 1, 8), off + 9)
+            // float32 (real tvOS emits this; pyatv: struct.unpack("<f"))
+            tag == 0x35 -> {
+                val bits = leRead(data, off + 1, 4).toInt()
+                Pair(java.lang.Float.intBitsToFloat(bits).toDouble(), off + 5)
+            }
             // float64
             tag == 0x36 -> {
                 val bits = leRead(data, off + 1, 8)

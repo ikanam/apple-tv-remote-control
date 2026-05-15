@@ -18,10 +18,15 @@ import dev.atvremote.protocol.connection.CommandChannel
  * (CLI smoke test against a real Apple TV device).
  *
  * @param channel  the command channel used to send button and session events.
+ * @param sid      the combined session id negotiated by `_sessionStart`
+ *                 (`(remoteSid shl 32) or localSid`). Sent in `_sessionStop`;
+ *                 real tvOS rejects `_sessionStop` with "No sessionID" without
+ *                 it. Defaults to 0 for test doubles / no-handshake usage.
  * @param onClose  optional teardown hook; called once when [close] is invoked.
  */
 class CompanionSessionImpl(
     private val channel: CommandChannel,
+    private val sid: Long = 0L,
     private val onClose: suspend () -> Unit = {},
 ) : CompanionSession {
 
@@ -43,10 +48,16 @@ class CompanionSessionImpl(
     }
 
     /**
-     * Sends a best-effort `_sessionStop` then invokes the [onClose] teardown.
+     * Sends a best-effort `_sessionStop` (with the negotiated [sid], matching
+     * pyatv `_session_stop`) then invokes the [onClose] teardown.
      */
     override suspend fun close() {
-        runCatching { channel.exchange("_sessionStop", emptyMap()) }
+        runCatching {
+            channel.exchange(
+                "_sessionStop",
+                mapOf("_srvT" to "com.apple.tvremoteservices", "_sid" to sid),
+            )
+        }
         onClose()
     }
 }

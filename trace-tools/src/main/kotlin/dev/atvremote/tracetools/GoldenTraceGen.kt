@@ -411,7 +411,9 @@ object GoldenTraceGen {
                 Tlv8.EncryptedData to m3Enc,
             ),
         )
-        val m3Opack = Opack.pack(linkedMapOf<String, Any?>("_pd" to m3Tlv, "_auTy" to 4L))
+        // M3 is _pd-only (NO _auTy): verified against pyatv companion/auth.py;
+        // real tvOS 18 rejects an M3 carrying _auTy (Task 17, 2026-05-16).
+        val m3Opack = Opack.pack(linkedMapOf<String, Any?>("_pd" to m3Tlv))
 
         // accessory verifies M3 (decrypt, check controller signature vs clientLtpk)
         run {

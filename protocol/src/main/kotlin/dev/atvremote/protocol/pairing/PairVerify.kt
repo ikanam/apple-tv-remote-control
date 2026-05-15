@@ -19,11 +19,14 @@ import dev.atvremote.protocol.tlv8.Tlv8
  * implementation that interoperates with the oracle's accessory, and that the
  * derived connection keys match.
  *
- * Wire framing (must match the protocol contract the fixture encodes):
- *  - Each step is an OPACK dict `{ "_pd": <TLV8 bytes>, "_auTy": 4 }` with
- *    `_pd` first and `_auTy` an integer `4` (OPACK small-int). All three
- *    pair-verify messages (M1/M2/M3) carry the same `_auTy: 4` wrapper —
- *    confirmed against the fixture; M3 is NOT `_pd`-only.
+ * Wire framing (verified against pyatv `companion/auth.py`, the reference this
+ * is ported from, which interoperates with real Apple TVs):
+ *  - **M1** (`PV_Start`): OPACK `{ "_pd": <TLV8>, "_auTy": 4 }` (`_pd` first,
+ *    `_auTy` the OPACK small-int `4`).
+ *  - **M3** (`PV_Next`): OPACK `{ "_pd": <TLV8> }` — **`_pd`-only, NO `_auTy`**.
+ *    Real tvOS 18 rejects an M3 that carries `_auTy` (observed on device
+ *    2026-05-16); the earlier synthetic fixture wrongly wrapped M3 with
+ *    `_auTy: 4`, which is why it could not catch this — corrected under Task 17.
  *  - TLV item order is significant and fixed per message (see each builder):
  *    M1 `{ SeqNo, PublicKey }`, M3 `{ SeqNo, EncryptedData }`.
  *  - Fixed-nonce ChaCha20-Poly1305 (`PV-Msg02` decrypt / `PV-Msg03` encrypt);
@@ -56,8 +59,16 @@ class PairVerify(
     private var serverPub: ByteArray? = null
     private var sessKey: ByteArray? = null
 
-    private fun wrap(tlv: ByteArray): ByteArray =
+    /** M1 wrapper: `{ "_pd": <tlv>, "_auTy": 4 }` (pyatv `PV_Start`). */
+    private fun wrapM1(tlv: ByteArray): ByteArray =
         Opack.pack(linkedMapOf<String, Any?>("_pd" to tlv, "_auTy" to 4L))
+
+    /**
+     * M3 wrapper: `{ "_pd": <tlv> }` — `_pd`-only, NO `_auTy` (pyatv `PV_Next`).
+     * Real tvOS 18 rejects an M3 carrying `_auTy`.
+     */
+    private fun wrapPdOnly(tlv: ByteArray): ByteArray =
+        Opack.pack(linkedMapOf<String, Any?>("_pd" to tlv))
 
     private fun unwrapPd(payload: ByteArray): Map<Int, ByteArray> {
         @Suppress("UNCHECKED_CAST")
@@ -75,7 +86,7 @@ class PairVerify(
                 Tlv8.PublicKey to x25519Pub,
             ),
         )
-        return wrap(tlv)
+        return wrapM1(tlv)
     }
 
     /**
@@ -140,7 +151,7 @@ class PairVerify(
                 Tlv8.EncryptedData to enc,
             ),
         )
-        return wrap(tlv)
+        return wrapPdOnly(tlv)
     }
 
     /**

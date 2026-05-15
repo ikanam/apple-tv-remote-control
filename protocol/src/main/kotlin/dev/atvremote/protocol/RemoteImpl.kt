@@ -8,6 +8,8 @@ import dev.atvremote.protocol.pairing.PairVerify
 import dev.atvremote.protocol.pairing.PairingHandleImpl
 import dev.atvremote.protocol.session.CompanionSessionImpl
 import dev.atvremote.protocol.session.SessionHandshake
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -65,23 +67,44 @@ internal object RemoteConnect {
             // M3: controller → ATV (PV_Next frame for the response, pre-packed OPACK payload)
             conn.send(FrameType.PV_Next, pv.buildM3())
 
+            // Await the accessory's pair-verify M4 (PV_Next, `{ _pd: { State: 4 } }`)
+            // BEFORE enabling encryption — matches pyatv, whose `exchange_auth`
+            // awaits the M3 response. [conn.frames] is replay-buffered, so M2 is
+            // still cached as the 1st PV_Next; positionally skip it and take the
+            // 2nd PV_Next (= M4). If we enabled encryption first, this plaintext
+            // M4 would be fed to the cipher and corrupt the read loop.
+            withTimeout(5_000) {
+                conn.frames()
+                    .filter { (ft, _) -> ft == FrameType.PV_Next }
+                    .drop(1)
+                    .first()
+            }
+
             // Enable session encryption with the derived connection keys.
             val (outKey, inKey) = pv.connectionKeys()
             conn.enableEncryption(outKey, inKey)
 
             // 4. Session handshake (five exchanges that complete the Companion session setup).
-            //    clientId bytes → hex string used as the controller identifier in the handshake.
-            val clientIdStr = credentials.clientId.joinToString("") { "%02x".format(it) }
-            SessionHandshake(
+            //    [credentials.clientId] is the UTF-8 bytes of the pair-setup
+            //    pairing id (a UUID string) — the SAME identity the Apple TV
+            //    just authenticated in pair-verify. It must be sent VERBATIM as
+            //    the controller id (`_idsID`/`_i`/`_pubID`), NOT hex-re-encoded
+            //    (pyatv sends `creds.client_id`). A mismatched `_idsID` makes
+            //    tvOS ack `_systemInfo` but silently drop `_touchStart`.
+            val clientIdStr = String(credentials.clientId, Charsets.UTF_8)
+            val handshake = SessionHandshake(
                 proto,
-                deviceId = device.id,
+                deviceId = clientIdStr,
                 clientId = clientIdStr,
                 name = "Android",
                 model = "Android",
-            ).run()
+            )
+            handshake.run()
 
-            // 5. Return a live CompanionSession; onClose tears down protocol + connection.
-            return CompanionSessionImpl(proto, onClose = {
+            // 5. Return a live CompanionSession; onClose tears down protocol +
+            //    connection. The negotiated [SessionHandshake.sid] is passed so
+            //    `_sessionStop` is accepted by tvOS (else "No sessionID").
+            return CompanionSessionImpl(proto, sid = handshake.sid, onClose = {
                 proto.close()
                 conn.close()
             })

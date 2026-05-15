@@ -15,79 +15,99 @@ Git: branch `main`, pushed to `origin`
 per-task directly to `main`. Execution uses subagent-driven development
 (implementer → spec review → code-quality review → fix/re-review).
 
+## Protocol-debugging rule (READ FIRST)
+
+**Any Companion-protocol issue — framing, ChaCha/nonce, HKDF/keys, OPACK,
+pair-setup/verify, session handshake, HID — FIRST compare our implementation
+line-by-line against the exact `pyatv` source, before hypothesizing or
+fixing.** pyatv (`github.com/postlund/pyatv`, raw: `raw.githubusercontent.com/
+postlund/pyatv/master/...`) interoperates with real Apple TVs and is the
+authoritative reference this code is ported from. The in-repo synthetic
+Task-10 oracle/fixtures are NOT real-device truth — when they disagree with
+pyatv/real tvOS, **pyatv wins** (correct our code AND the synthetic fixture).
+Every Task-17 bug (discovery, PIN timing, ChaCha nonce, pair-verify M3
+wrapper, M4 ordering, OPACK float32, session identity, `_sessionStop`) was
+pinpointed only by reading the precise pyatv file — guessing wasted rounds;
+the pyatv diff was always decisive. Reuse this for Plan 2 command work.
+
 ## Status
 
-### Plan 1 (`:protocol` foundation): COMPLETE & pushed
+### Plan 1 (`:protocol` foundation): COMPLETE & real-device validated
 Tasks 1–17 done. Discovery, HAP/SRP pair-setup, pair-verify, encrypted
-Companion session, one HID command, CLI smoke tool. **55 tests green** (both
-modules) from clean. Public API in `protocol/src/main/.../Api.kt` is LOCKED —
-Plans 2/3 depend on those exact types; do not break them. Synthetic
-golden-trace fixtures (Task 10 in-repo oracle) validate protocol logic without
-a device; authoritative real-device validation = Task 17.
+Companion session, HID command, CLI smoke tool. **64 tests green** (protocol 55
++ trace-tools 9) from clean. Public API in `protocol/src/main/.../Api.kt` is
+LOCKED — Plans 2/3 depend on those exact types; do not break them.
+`PairSetupGoldenTest` stays **byte-identical** (locked). The pair-verify
+synthetic fixture (`pair-verify.json`) WAS corrected vs real-device truth under
+Task 17 (see C2 below) — that is exactly what Task 17 is for.
 
-### Real-device validation (Task 17) — IN PROGRESS on the actual hardware
-Test Apple TV is on the LAN: mDNS name **客厅**, model **AppleTV14,1**,
-**192.168.7.134:49153**. Host LAN interface: `en1` = **192.168.7.131**
-(many `utun*` VPN ifaces present; `InetAddress.getLocalHost()` → 127.0.0.1).
+### Real-device validation (Task 17) — ✅ COMPLETE end-to-end
+`pair → connect → menu` all confirmed against the real **客厅**
+(**AppleTV14,1**, **192.168.7.134:49153**, tvOS ≈715.2). This is the
+authoritative end-to-end check of Tasks 6/11/12/14/16.
 
-Build/run the CLI:
+Env: this machine had **no JDK**; Temurin 17 installed at
+`/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home` — prefix
+Gradle/CLI with `JAVA_HOME=...temurin-17.jdk/Contents/Home`. Host LAN iface
+`en1`=192.168.7.131 (VPN `utun*` present). Build/run:
 ```
-./gradlew :trace-tools:installDist
-./trace-tools/build/install/trace-tools/bin/trace-tools scan
-# pair/menu: see below
+JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home ./gradlew :trace-tools:installDist
+JAVA_HOME=...temurin-17.jdk/Contents/Home ./trace-tools/build/install/trace-tools/bin/trace-tools scan
+# pair (interactive PIN on TV) / menu — see below
 ```
-NOTE: when running mDNS/network via Claude Code Bash, the sandbox must be
-disabled (real multicast). Optional override: env `ATVREMOTE_MDNS_ADDR=192.168.7.131`.
+NOTE: mDNS/network via Claude Bash needs the sandbox disabled (real
+multicast). Optional override: env `ATVREMOTE_MDNS_ADDR=192.168.7.131`.
 
-- **`scan` (discovery): ✅ FIXED & REAL-DEVICE VALIDATED.**
-  Root cause: `JmdnsDiscovery` called `JmDNS.create()` no-arg → bound the mDNS
-  socket to a VPN `utun` interface on this multi-homed Mac → never saw the
-  Apple TV. Fixed (commits `6a44334` + `93aeab3`): LAN-interface bind via pure
-  `selectBindAddress()` (env/ctor override + `JmDNS.create()` fallback),
-  case-insensitive TXT (real keys are camelCase `rpMd`/`rpFl`, not
-  `rpmd`/`rpfl`), IPv4-only host (skip IPv6/link-local resolves), and
-  `SmokeCli scan` now accumulates over a 10s window. Shipped CLI now lists:
-  `客厅@192.168.7.134:49153  客厅  192.168.7.134:49153  AppleTV14,1  true`.
+**The authoritative protocol reference is pyatv** (`postlund/pyatv`); this
+codebase is ported from it. Every Bug C fix below was pinpointed by reading the
+exact pyatv source. The synthetic Task-10 oracle/fixtures are NOT real-device
+truth — when they disagree with pyatv/real tvOS, pyatv wins.
 
-- **`pair` / `menu`: ❌ OPEN BUG — this is the next task to fix.**
-  Real-device-reasoned defect (NOT yet empirically reproduced — do that first):
-  `PairingHandleImpl` **defers the entire M1..M6 exchange into `submitPin()`**
-  because `PairSetup`'s constructor takes the PIN and `PairSetup.buildM1()`
-  calls `srp.step1(pin)` (see `PairingHandleImpl.kt` init/submitPin and
-  `PairSetup.kt:73`). But in HAP pair-setup the Apple TV only **displays its
-  PIN after it receives M1 and replies M2**. So `SmokeCli pair` sets
-  `AwaitingPin` and prompts "Enter PIN shown on TV" **before M1 is ever sent**
-  → the TV is not showing a PIN → real pairing cannot proceed. The synthetic
-  golden test cannot catch this (the fixture supplies a fixed PIN upfront and
-  scripts M2/M4/M6).
-  **Fix direction:** send M1 and consume M2 (which makes the ATV display the
-  PIN) BEFORE transitioning to `AwaitingPin`/prompting; only M3..M6 need the
-  PIN. Constraint: the LOCKED `PairSetupGoldenTest` constructs
-  `PairSetup(seed, pairingId, pin)` and calls `buildM1()..consumeM6()` in
-  order — must stay byte-identical. Likely options: (a) split `PairSetup` so
-  `buildM1`/`consumeM2` are pin-free and the PIN is supplied before
-  `buildM3` (keep the locked test satisfiable, e.g. via an overload/secondary
-  entry), or (b) have `PairingHandleImpl` drive M1/M2 over the connection
-  itself before constructing the pin-bearing `PairSetup`. Use
-  systematic-debugging: first reproduce against the real device, then one
-  root-cause fix + TDD, then re-validate.
-  Pairing is interactive (PIN shows on the TV screen): attempt via the user
-  running `! ./trace-tools/build/install/trace-tools/bin/trace-tools pair "客厅@192.168.7.134:49153"`
-  and typing the PIN shown on the TV. `menu` needs a successful `pair` first
-  (writes `~/.atvremote/credentials`). A successful pair→connect→menu is the
-  authoritative end-to-end check of Tasks 6/11/12/14/16 against real tvOS 18.
+Bugs fixed (all real-device validated; each has a TDD regression test):
+- **A — discovery (`pair`/`menu`)**: used `first { isNotEmpty() }`, returned
+  before the Apple TV resolved (local Mac advert wins). → `awaitDevice` waits
+  for the target id (`SmokeCli.kt`). [`scan` itself was fixed earlier in
+  `6a44334`/`93aeab3`.]
+- **B — pair PIN timing**: M1..M6 was deferred into `submitPin()`, so the CLI
+  prompted before M1 → TV showed no PIN. → `PairingHandleImpl` sends M1 +
+  consumes raw M2 eagerly at construction (defaulted test-scheduler scope);
+  `submitPin` joins then runs M3..M6. `PairSetup`/`Srp` untouched → locked
+  golden byte-identical.
+- **C1 — connection ChaCha nonce**: must be base `Chacha20Cipher`
+  `counter.to_bytes(12,"little")` (LE counter in bytes 0..7, no pad). The
+  `[4 zero||8-byte LE]` layout is the `Chacha20Cipher8byteNonce` subclass —
+  pair-verify PV-Msg only, NOT the connection.
+- **C2 — pair-verify M3 wrapper**: M3 must be OPACK `{ _pd }` **only** (NO
+  `_auTy`); M1 keeps `{ _pd, _auTy:4 }`. tvOS rejected M3-with-`_auTy`. Oracle
+  + `pair-verify.json` + its loader/golden tests corrected to match pyatv.
+- **C3 — pair-verify M4 ordering**: must consume the accessory M4 (`PV_Next
+  {State:4}`) BEFORE `enableEncryption` (else the plaintext M4 hits the cipher
+  and kills the read loop). `RemoteConnect.connect` positionally skips the
+  replay-cached M2 and takes the 2nd `PV_Next`.
+- **C4 — OPACK float32**: decoder lacked tag `0x35` (real `_systemInfo` uses
+  it) → added (pyatv `struct.unpack("<f")`).
+- **C5 — session identity**: `_idsID`/`_i`/`_pubID` were a double-hex-encoded
+  clientId + the ATV's mDNS id; must send the verbatim pairing-id string
+  (`String(credentials.clientId)`), the identity pair-verify authenticated.
+- **C6 — `_sessionStop`**: was sent with empty content → tvOS "No sessionID".
+  Now sends `{ _srvT:"com.apple.tvremoteservices", _sid:<combined sid> }`
+  (`SessionHandshake.sid` threaded into `CompanionSessionImpl`).
 
-After real-device pairing works, also replace the synthetic fixtures with a
-real pyatv capture per `trace-tools/.../CaptureGuide.md` so the golden tests
-become a real-device baseline.
+Known robustness follow-up (non-blocking, NOT yet fixed):
+`CompanionConnection.readLoop`'s `catch (_: Exception) {}` silently swallows a
+decode/decrypt failure and kills the reader (masked the C-chain during
+debugging). Also `Frame.decode` decrypts ALL frames once `cipher!=null` (it
+should only decrypt session/E_OPACK frames). Neither blocks the happy path.
 
 ## Resume checklist (next session)
 1. `git pull` (work is on `main` @ origin).
-2. Re-confirm discovery still works: build CLI, `bin/trace-tools scan` (sandbox
-   off / real LAN) → expect the `客厅 … AppleTV14,1 … true` line.
-3. Fix the `pair` ordering bug (see above) under systematic-debugging: reproduce
-   on the real device first (interactive PIN), root-cause, single fix + TDD
-   (keep locked `PairSetupGoldenTest` byte-identical, 55 tests green), then
-   re-validate pair→menu on the real Apple TV.
-4. Project memory: `/Users/shinya/.claude/projects/-Users-shinya-Downloads-apple-tv-controller/memory/`
-   (`MEMORY.md` index) has roadmap + workflow notes.
+2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **64
+   tests green**, `PairSetupGoldenTest` byte-identical.
+3. Re-confirm real device: `scan` → `客厅 … AppleTV14,1 … true`; then
+   `pair "客厅@192.168.7.134:49153"` (type the PIN shown on the TV) →
+   `Paired`; then `menu "客厅@..."` → `OK` + TV reacts.
+4. Optional next work: the readLoop-swallow / decrypt-all robustness
+   follow-up; replace synthetic fixtures with a real pyatv capture per
+   `trace-tools/.../CaptureGuide.md`; then Plan 2.
+5. Project memory: `/Users/shinya/.claude/projects/-Users-shinya-Downloads-apple-tv-controller/memory/`
+   (`MEMORY.md` index).

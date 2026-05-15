@@ -28,4 +28,19 @@ class ButtonTest {
         assertEquals("_hidC", sent.last().first)
         assertEquals(1, sent.last().second["_hBtS"]); assertEquals(5, sent.last().second["_hidC"])
     }
+
+    /**
+     * Real-device (Bug C follow-up): tvOS rejects `_sessionStop` with
+     * "No sessionID" unless the negotiated combined session id is supplied.
+     * Verified against pyatv `_session_stop`:
+     * `{ "_srvT": "com.apple.tvremoteservices", "_sid": sid }`.
+     */
+    @Test fun closeSendsSessionStopWithSid() = runTest {
+        val sent = mutableListOf<Pair<String, Map<String, Any?>>>()
+        val session = CompanionSessionImpl(RecordingProtocol2(sent), sid = 434356147L)
+        session.close()
+        assertEquals("_sessionStop", sent.last().first)
+        assertEquals("com.apple.tvremoteservices", sent.last().second["_srvT"])
+        assertEquals(434356147L, sent.last().second["_sid"])
+    }
 }

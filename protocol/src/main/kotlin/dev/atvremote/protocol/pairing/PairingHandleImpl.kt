@@ -9,6 +9,7 @@ import dev.atvremote.protocol.frame.FrameType
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -34,10 +35,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  * golden-validated [PairSetup] reproduces exactly the controller frames the
  * synthetic accessory script expects (mirroring `PairSetupGoldenTest`).
  *
- * This keeps the locked single-argument constructor
- * `PairingHandleImpl(conn)` intact — the fixed values flow in *through the
- * connection*, not through extra constructor parameters the locked test does
- * not pass.
+ * The seed / pairing id flow in *through the connection*, so the production
+ * call site stays `PairingHandleImpl(conn)` (the second [CoroutineScope]
+ * constructor parameter is defaulted — single-argument construction remains
+ * valid; tests pass a test-scheduler scope so the eager M1/M2 [prePinJob]
+ * runs in virtual time).
  */
 interface PairingKeys {
     /** Controller Ed25519 long-term auth private seed (32B). */
@@ -50,17 +52,29 @@ interface PairingKeys {
  * Drives a HAP pair-setup (M1..M6) over a live [FrameTransport] and exposes it
  * as the locked [PairingHandle] state machine.
  *
- * ## PIN-timing resolution
- * [PairSetup] takes the PIN in its *constructor* (`buildM1` calls
- * `srp.step1(pin)`), whereas [PairingHandle.submitPin] supplies the PIN
- * *later*. Rather than build a throwaway [PairSetup] with a placeholder PIN,
- * the entire M1..M6 exchange is **deferred to [submitPin]**: at construction
- * the handle only records the key material and publishes
- * [PairingState.AwaitingPin]. When the PIN arrives a single [PairSetup] is
- * created with the real PIN and the full exchange runs. This matches the
- * locked test ([PairingState.AwaitingPin] before `submitPin`,
- * [PairingState.Completed] after it returns) and needs no changes to
- * [PairSetup].
+ * ## PIN-timing resolution (Bug B fix — real-device, 2026-05-16)
+ * In HAP pair-setup the Apple TV displays its PIN **only after** it receives
+ * M1 (`PS_Start`) and replies M2. The previous design deferred the *entire*
+ * M1..M6 exchange into [submitPin], so a caller (e.g. the CLI) prompted
+ * "Enter PIN shown on TV" *before* M1 was ever sent — the TV showed nothing
+ * and real pairing could not proceed.
+ *
+ * Resolution: M1 and M2 are driven **eagerly at construction** by [prePinJob]
+ * (launched on [scope]), so the TV is already displaying its PIN while the
+ * caller is still being prompted. M1's wire bytes are *pin-independent*
+ * (`buildM1` = `wrap({Method,SeqNo})`, and `srp.step1`'s `A = g^a` derives
+ * from the seed, not the PIN), so a throwaway `PairSetup(seed, pairingId, "")`
+ * yields the exact M1; the raw M2 bytes are stashed in [m2Raw] without
+ * cryptographic processing (which needs the PIN). [submitPin] then joins
+ * [prePinJob] and runs M3..M6 via a fresh `PairSetup(seed, pairingId, pin)`
+ * — its `buildM1()` is called only to drive the deterministic `srp.step1`
+ * (bytes discarded; M1 already sent), then `consumeM2([m2Raw])`, M3, M5.
+ *
+ * [PairSetup] / [dev.atvremote.protocol.crypto.Srp] are **unchanged**, so the
+ * byte-locked `PairSetupGoldenTest` is unaffected. The handle still publishes
+ * [PairingState.AwaitingPin] from construction (the only non-terminal public
+ * state) and [PairingState.Completed] after [submitPin]; "AwaitingPin" now
+ * means "M1 sent, M2 received, TV showing PIN — waiting for the user".
  *
  * ## Seed / pairing-id seam
  * If [conn] also implements [PairingKeys] (the scripted golden double), its
@@ -88,6 +102,7 @@ interface PairingKeys {
  */
 class PairingHandleImpl(
     private val conn: FrameTransport,
+    scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
 ) : PairingHandle {
 
     private val seed: ByteArray
@@ -132,17 +147,62 @@ class PairingHandleImpl(
      */
     private var psNextConsumed = 0
 
+    /**
+     * Raw M2 (`PS_Next`) accessory bytes captured by [prePinJob], before the
+     * user-entered PIN is available. Not cryptographically processed here
+     * (`PairSetup.consumeM2` → `srp.step2` needs the PIN); [submitPin] feeds
+     * these bytes into the real pin-bearing [PairSetup]. `@Volatile` is
+     * belt-and-suspenders; [submitPin]'s `prePinJob.join()` already establishes
+     * the happens-before edge for this write.
+     */
+    @Volatile
+    private var m2Raw: ByteArray? = null
+
+    /**
+     * Eager M1/M2 phase (Bug B fix): sends M1 (`PS_Start`) and captures raw M2
+     * at construction so the Apple TV displays its PIN *before* the caller is
+     * prompted. M1's bytes are pin-independent, so a throwaway
+     * `PairSetup(seed, pairingId, "")` produces the exact M1 wire frame.
+     *
+     * A failure here (e.g. peer-silent timeout in [awaitNext]) sets
+     * [PairingState.Failed] if still pending, so a caller awaiting `state`
+     * before prompting is not left stuck. Real coroutine cancellation
+     * (from [cancel]) is swallowed — [cancel] already set the terminal state.
+     */
+    private val prePinJob: Job = scope.launch {
+        try {
+            val m1 = PairSetup(seed = seed, pairingId = pairingId, pin = "").buildM1()
+            conn.send(FrameType.PS_Start, m1)
+            m2Raw = awaitNext() // ATV has now displayed its PIN
+        } catch (c: CancellationException) {
+            throw c
+        } catch (t: Throwable) {
+            if (_state.value is PairingState.AwaitingPin) {
+                _state.value = PairingState.Failed(
+                    t.message ?: t::class.simpleName ?: "pair-setup M1/M2 failed",
+                )
+            }
+        }
+    }
+
     override suspend fun submitPin(pin: String) {
         // Atomic single-use guard: only the first caller proceeds.
         if (!started.compareAndSet(false, true)) return
         // Belt-and-suspenders: bail if already in a terminal state (e.g. cancel() raced).
         if (_state.value !is PairingState.AwaitingPin) return
         try {
+            // Ensure M1 was sent and raw M2 captured (or a terminal state set).
+            prePinJob.join()
+            if (_state.value !is PairingState.AwaitingPin) return
+            val m2 = m2Raw ?: error("pair-setup: M2 not received before submitPin")
+
             val ps = PairSetup(seed = seed, pairingId = pairingId, pin = pin)
 
-            // M1 controller → ATV (PS_Start), M2 ATV → controller (PS_Next)
-            conn.send(FrameType.PS_Start, ps.buildM1())
-            ps.consumeM2(awaitNext())
+            // M1 already sent by prePinJob; buildM1() here only drives the
+            // deterministic srp.step1 (A = g^a, seed-derived) so consumeM2's
+            // `check(aPub != 0)` holds — the returned bytes are discarded.
+            ps.buildM1()
+            ps.consumeM2(m2)
 
             // M3 controller → ATV (PS_Next), M4 ATV → controller (PS_Next)
             conn.send(FrameType.PS_Next, ps.buildM3())
@@ -222,6 +282,9 @@ class PairingHandleImpl(
     override fun cancel() {
         // Only flip to Failed if still AwaitingPin; never overwrite a terminal state.
         _state.compareAndSet(PairingState.AwaitingPin, PairingState.Failed("cancelled"))
+
+        // Stop the eager M1/M2 coroutine if it is still running.
+        prePinJob.cancel()
 
         // Offload suspend close to a dedicated scope that won't be cancelled itself.
         closerScope.launch {

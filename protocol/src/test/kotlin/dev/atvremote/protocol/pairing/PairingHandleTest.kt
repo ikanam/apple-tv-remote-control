@@ -4,10 +4,12 @@ import dev.atvremote.protocol.PairingState
 import dev.atvremote.protocol.connection.FrameTransport
 import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.goldentrace.GoldenTrace
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
@@ -125,8 +127,45 @@ class SilentScriptedConnection(
 }
 
 class PairingHandleTest {
+    /**
+     * Bug B regression (real-device, 2026-05-16): the Apple TV displays its
+     * pair-setup PIN only *after* it receives M1 (`PS_Start`) and replies M2.
+     * The old [PairingHandleImpl] deferred the entire M1..M6 exchange into
+     * [PairingHandleImpl.submitPin], so the CLI prompted "Enter PIN shown on
+     * TV" before M1 was ever sent — the TV showed nothing and real pairing
+     * could not proceed.
+     *
+     * Corrected behaviour: M1 is sent (and raw M2 received) at construction,
+     * *before* [PairingHandleImpl.submitPin] — so the TV is already displaying
+     * its PIN while the caller is still being prompted. The handle stays
+     * [PairingState.AwaitingPin] (the only non-terminal public state) until the
+     * user-entered PIN drives M3..M6.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun m1IsSentAtConstructionBeforeSubmitPin() = runTest {
+        val conn = ScriptedConnection.fromGoldenTrace("pair-setup.json")
+        // Directly-scheduled test scope (NOT backgroundScope): advanceUntilIdle()
+        // must deterministically run the eager prePinJob even though nothing is
+        // awaiting it yet — that is exactly the property under test.
+        val handle = PairingHandleImpl(conn, CoroutineScope(StandardTestDispatcher(testScheduler)))
+        advanceUntilIdle()
+
+        assertEquals(1, conn.sendCount,
+            "M1 (PS_Start) must be sent at construction, before submitPin — " +
+                "the Apple TV only shows its PIN after receiving M1")
+        assertTrue(handle.state.value is PairingState.AwaitingPin,
+            "still AwaitingPin: M1 sent & M2 received, now waiting for the user-entered PIN")
+
+        handle.submitPin("1234")
+        assertIs<PairingState.Completed>(handle.state.value)
+        assertEquals(3, conn.sendCount,
+            "exactly M1 + M3 + M5 sent across the full exchange")
+    }
+
     @Test fun awaitingPinThenCompleted() = runTest {
-        val handle = PairingHandleImpl(ScriptedConnection.fromGoldenTrace("pair-setup.json"))
+        val handle = PairingHandleImpl(
+            ScriptedConnection.fromGoldenTrace("pair-setup.json"), backgroundScope,
+        )
         assertTrue(handle.state.value is PairingState.AwaitingPin)
         handle.submitPin("1234")
         assertTrue(handle.state.value is PairingState.Completed)
@@ -135,27 +174,28 @@ class PairingHandleTest {
     /**
      * Proves Fix C1: a silent peer (no accessory reply) causes [withTimeout] to fire
      * a [TimeoutCancellationException], which [awaitNext] converts to an [IOException],
-     * which [submitPin]'s `catch (t: Throwable)` then uses to set [PairingState.Failed].
+     * which sets [PairingState.Failed] rather than leaving the handle stuck.
      *
-     * Under [runTest]'s virtual-time scheduler, [withTimeout] expires instantly when
-     * there are no frames to collect — no real 5-second wait. The test is therefore
-     * deterministic and non-flaky.
+     * Post Bug-B fix the timeout now occurs in the **eager M1/M2 `prePinJob`**
+     * (it sends M1 then awaits M2 from the silent peer); `submitPin` joins that
+     * job and observes the already-[PairingState.Failed] terminal state. Under
+     * [runTest]'s virtual-time scheduler (the handle's `prePinJob` runs on
+     * [backgroundScope], same test scheduler) [withTimeout] expires instantly —
+     * no real 5-second wait, deterministic and non-flaky.
      *
-     * Without Fix C1 (i.e. the original code where [TimeoutCancellationException] escapes
-     * [submitPin]'s `catch (c: CancellationException) { throw c }` branch), [submitPin]
-     * would re-throw the exception without setting [PairingState.Failed], leaving the
-     * handle stuck in [PairingState.AwaitingPin] and `started` still true — violating
-     * the documented invariant.
+     * Without Fix C1 the [TimeoutCancellationException] would escape the
+     * `catch (c: CancellationException) { throw c }` branch without setting
+     * [PairingState.Failed], leaving the handle stuck in [PairingState.AwaitingPin].
      */
     @Test fun timeoutLeavesFailedNotStuck() = runTest {
         val gt = GoldenTrace.load("pair-setup.json")
         val conn = SilentScriptedConnection(gt)
-        val handle = PairingHandleImpl(conn)
+        val handle = PairingHandleImpl(conn, backgroundScope)
         assertTrue(handle.state.value is PairingState.AwaitingPin)
 
-        // submitPin will block at awaitNext() waiting for M2; withTimeout(5_000) fires
-        // immediately in runTest's virtual clock. The resulting IOException drives
-        // the catch(t: Throwable) branch to set Failed.
+        // prePinJob sends M1 then blocks at awaitNext() waiting for M2 from the
+        // silent peer; withTimeout(5_000) fires immediately in runTest's virtual
+        // clock → IOException → Failed. submitPin joins prePinJob and returns.
         handle.submitPin("1234")
 
         val state = handle.state.value
@@ -184,7 +224,7 @@ class PairingHandleTest {
      */
     @Test fun secondSubmitPinIsNoOp() = runTest {
         val conn = ScriptedConnection.fromGoldenTrace("pair-setup.json")
-        val handle = PairingHandleImpl(conn)
+        val handle = PairingHandleImpl(conn, backgroundScope)
 
         handle.submitPin("1234")
         assertIs<PairingState.Completed>(handle.state.value,
@@ -227,10 +267,11 @@ class PairingHandleTest {
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test fun cancelBeforeSubmitClosesAndFails() = runTest {
         val conn = ScriptedConnection.fromGoldenTrace("pair-setup.json")
-        val handle = PairingHandleImpl(conn)
+        val handle = PairingHandleImpl(conn, backgroundScope)
         assertTrue(handle.state.value is PairingState.AwaitingPin)
 
-        // cancel() before any submitPin: must set Failed("cancelled") and close conn.
+        // cancel() before any submitPin: must set Failed("cancelled"), cancel the
+        // eager prePinJob, and close conn.
         handle.cancel()
         val stateAfterCancel = handle.state.value
         assertIs<PairingState.Failed>(stateAfterCancel,
@@ -250,7 +291,7 @@ class PairingHandleTest {
 
         // Calling cancel() on a Completed handle must NOT overwrite Completed.
         val conn2 = ScriptedConnection.fromGoldenTrace("pair-setup.json")
-        val handle2 = PairingHandleImpl(conn2)
+        val handle2 = PairingHandleImpl(conn2, backgroundScope)
         handle2.submitPin("1234")
         assertIs<PairingState.Completed>(handle2.state.value,
             "handle2 must be Completed after submitPin")

@@ -66,11 +66,17 @@ class GoldenTraceLoaderTest {
         val m1 = gt.out(0); val m2 = gt.inFrame(1); val m3 = gt.out(2)
         for (b in listOf(m1, m2, m3)) assertTrue(b.isNotEmpty())
 
-        // OPACK wrapper keys for verify M1: {_pd, _auTy}
+        // OPACK wrapper keys (verified vs pyatv companion/auth.py, real-device
+        // truth — Task 17): every step has _pd; M1/M2 carry _auTy:4, but M3
+        // (controller PV_Next, step index 2) is _pd-ONLY — real tvOS 18 rejects
+        // an M3 carrying _auTy.
         gt.steps.forEach { st ->
             assertTrue(st.decoded.containsKey("_pd"), "verify step missing _pd")
-            assertTrue(st.decoded.containsKey("_auTy"), "verify step missing _auTy")
         }
+        assertTrue(gt.steps[0].decoded.containsKey("_auTy"), "M1 must carry _auTy")
+        assertTrue(gt.steps[1].decoded.containsKey("_auTy"), "M2 must carry _auTy")
+        assertTrue(!gt.steps[2].decoded.containsKey("_auTy"),
+            "M3 must be _pd-only (no _auTy) — pyatv PV_Next / real tvOS")
 
         // Fixed inputs for Task 12.
         assertEquals(32, gt.fixedX25519Priv.size, "X25519 priv must be 32B")
