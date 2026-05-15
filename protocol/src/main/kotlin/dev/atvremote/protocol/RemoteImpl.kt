@@ -7,8 +7,8 @@ import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.pairing.PairVerify
 import dev.atvremote.protocol.session.CompanionSessionImpl
 import dev.atvremote.protocol.session.SessionHandshake
-import java.util.HexFormat
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeout
 
 /**
  * Internal entry point for [AppleTvRemote.connect].
@@ -42,42 +42,51 @@ internal object RemoteConnect {
         // 2. Build the protocol layer on top.
         val proto = CompanionProtocol(conn)
 
-        // 3. HAP Pair-Verify (M1 → M2 → M3).
-        //
-        //    Integration path: send raw bytes via conn.send(), await PV_Next from
-        //    conn.frames(). See file-level KDoc for why sendAuth() is not used here.
-        val (xPriv, xPub) = Curves.newX25519()
-        val pv = PairVerify(credentials, xPriv, xPub)
+        try {
+            // 3. HAP Pair-Verify (M1 → M2 → M3).
+            //
+            //    Integration path: send raw bytes via conn.send(), await PV_Next from
+            //    conn.frames(). See file-level KDoc for why sendAuth() is not used here.
+            val (xPriv, xPub) = Curves.newX25519()
+            val pv = PairVerify(credentials, xPriv, xPub)
 
-        // M1: controller → ATV (PV_Start frame, pre-packed OPACK payload)
-        conn.send(FrameType.PV_Start, pv.buildM1())
+            // M1: controller → ATV (PV_Start frame, pre-packed OPACK payload)
+            conn.send(FrameType.PV_Start, pv.buildM1())
 
-        // M2: ATV → controller (PV_Next frame, pre-packed OPACK payload)
-        val (_, m2Payload) = conn.frames().first { (ft, _) -> ft == FrameType.PV_Next }
-        pv.consumeM2(m2Payload)
+            // M2: ATV → controller (PV_Next frame, pre-packed OPACK payload).
+            // Bounded to 5 s — parity with CompanionProtocol.sendAuth timeout.
+            val (_, m2Payload) = withTimeout(5_000) {
+                conn.frames().first { (ft, _) -> ft == FrameType.PV_Next }
+            }
+            pv.consumeM2(m2Payload)
 
-        // M3: controller → ATV (PV_Next frame for the response, pre-packed OPACK payload)
-        conn.send(FrameType.PV_Next, pv.buildM3())
+            // M3: controller → ATV (PV_Next frame for the response, pre-packed OPACK payload)
+            conn.send(FrameType.PV_Next, pv.buildM3())
 
-        // Enable session encryption with the derived connection keys.
-        val (outKey, inKey) = pv.connectionKeys()
-        conn.enableEncryption(outKey, inKey)
+            // Enable session encryption with the derived connection keys.
+            val (outKey, inKey) = pv.connectionKeys()
+            conn.enableEncryption(outKey, inKey)
 
-        // 4. Session handshake (five exchanges that complete the Companion session setup).
-        //    clientId bytes → hex string used as the controller identifier in the handshake.
-        val clientIdStr = credentials.clientId.joinToString("") { "%02x".format(it) }
-        SessionHandshake(
-            proto,
-            deviceId = device.id,
-            clientId = clientIdStr,
-            name = "Android",
-            model = "Android",
-        ).run()
+            // 4. Session handshake (five exchanges that complete the Companion session setup).
+            //    clientId bytes → hex string used as the controller identifier in the handshake.
+            val clientIdStr = credentials.clientId.joinToString("") { "%02x".format(it) }
+            SessionHandshake(
+                proto,
+                deviceId = device.id,
+                clientId = clientIdStr,
+                name = "Android",
+                model = "Android",
+            ).run()
 
-        // 5. Return a live CompanionSession; onClose tears down protocol + connection.
-        return CompanionSessionImpl(proto, onClose = {
-            proto.close()
-            conn.close()
-        })
+            // 5. Return a live CompanionSession; onClose tears down protocol + connection.
+            return CompanionSessionImpl(proto, onClose = {
+                proto.close()
+                conn.close()
+            })
+        } catch (t: Throwable) {
+            runCatching { proto.close() }
+            runCatching { conn.close() }
+            throw t
+        }
     }
 }
