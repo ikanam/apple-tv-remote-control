@@ -30,6 +30,28 @@ interface FrameTransport {
 }
 
 /**
+ * Minimal abstraction over the Companion protocol's request/event surface.
+ *
+ * Introduced so that session-layer components (e.g. [dev.atvremote.protocol.session.SessionHandshake])
+ * can depend on an interface rather than the concrete [CompanionProtocol], enabling
+ * lightweight test doubles (see `RecordingProtocol` in `SessionHandshakeTest`).
+ *
+ * [CompanionProtocol] implements this interface; all production code uses that class directly.
+ */
+interface CommandChannel {
+    /**
+     * Sends a named request with the given [content] and suspends until the response arrives.
+     * Returns the decoded response dict (string keys; integers decoded as [Long]).
+     */
+    suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?>
+
+    /**
+     * Sends a one-way named event; does not wait for a response.
+     */
+    suspend fun sendEvent(name: String, content: Map<String, Any?>)
+}
+
+/**
  * Protocol layer on top of a [FrameTransport]:
  * - Request/response correlation via `_x` (XID)
  * - Event fan-out for `_t == 1` messages
@@ -38,7 +60,7 @@ interface FrameTransport {
 class CompanionProtocol(
     private val conn: FrameTransport,
     context: CoroutineContext = SupervisorJob() + Dispatchers.Default,
-) {
+) : CommandChannel {
 
     // Always create a fresh SupervisorJob as a child of any Job in the provided context.
     // This ensures close() cancels only this scope's job, never the caller's job (e.g. a test scope).
@@ -70,7 +92,7 @@ class CompanionProtocol(
      * Builds and sends a request, then suspends until the matching response arrives.
      * Timeout: 5 seconds.
      */
-    suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
+    override suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
         val myXid = xidCounter.getAndIncrement() and 0xFFFF
         val myXidLong = myXid.toLong()
         val payload = Opack.pack(
@@ -89,7 +111,7 @@ class CompanionProtocol(
     /**
      * Sends a one-way event (no wait for response).
      */
-    suspend fun sendEvent(name: String, content: Map<String, Any?>) {
+    override suspend fun sendEvent(name: String, content: Map<String, Any?>) {
         val payload = Opack.pack(
             mapOf("_i" to name, "_t" to 1, "_c" to content)
         )
