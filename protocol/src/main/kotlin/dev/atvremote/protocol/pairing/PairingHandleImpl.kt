@@ -2,6 +2,7 @@ package dev.atvremote.protocol.pairing
 
 import dev.atvremote.protocol.PairingHandle
 import dev.atvremote.protocol.PairingState
+import dev.atvremote.protocol.connection.CompanionConnection
 import dev.atvremote.protocol.connection.FrameTransport
 import dev.atvremote.protocol.crypto.Curves
 import dev.atvremote.protocol.frame.FrameType
@@ -9,16 +10,19 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.toList
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
+import java.io.IOException
 import java.nio.charset.StandardCharsets
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Optional seam exposing the controller's pair-setup key material.
@@ -69,6 +73,14 @@ interface PairingKeys {
  *               → (failure / timeout / `cancel`) `Failed(reason)`.
  * Terminal states are never overwritten; partial credentials are never exposed.
  *
+ * ## Connection lifecycle
+ * [cancel] is the public cleanup hook (there is no `close()`). It offloads the
+ * actual [conn] close to [closerScope] (a separate [SupervisorJob]-backed IO
+ * scope) so the non-suspend [cancel] can initiate a suspend [CompanionConnection.close]
+ * without blocking. [closerScope] is never cancelled — it runs to completion.
+ * [conn] is closed via [CompanionConnection.close] if it is a real connection,
+ * or via [AutoCloseable.close] for any test double that implements it.
+ *
  * > NOTE: only the scripted path is unit-tested here. The real-device pair
  * > flow (via [dev.atvremote.protocol.RemoteConnect.pair] building a real
  * > [dev.atvremote.protocol.connection.CompanionConnection]) is exercised
@@ -91,13 +103,22 @@ class PairingHandleImpl(
         }
     }
 
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    /**
+     * Dedicated scope for closing the underlying connection asynchronously from
+     * the non-suspend [cancel] call. Uses a separate [SupervisorJob] so it is
+     * never cancelled alongside any handle-internal scope; it runs to completion.
+     */
+    private val closerScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _state = MutableStateFlow<PairingState>(PairingState.AwaitingPin)
     override val state: StateFlow<PairingState> = _state.asStateFlow()
 
-    /** Guards against running the exchange twice and against post-terminal mutation. */
-    private var started = false
+    /**
+     * Atomic guard: CAS from false→true at the top of [submitPin] so concurrent
+     * callers cannot both proceed (which would corrupt the protocol with duplicate
+     * M1 frames). A second call short-circuits immediately without suspending.
+     */
+    private val started = AtomicBoolean(false)
 
     /**
      * Count of inbound `PS_Next` accessory frames already consumed (M2, M4, M6).
@@ -112,8 +133,10 @@ class PairingHandleImpl(
     private var psNextConsumed = 0
 
     override suspend fun submitPin(pin: String) {
-        if (started || _state.value !is PairingState.AwaitingPin) return
-        started = true
+        // Atomic single-use guard: only the first caller proceeds.
+        if (!started.compareAndSet(false, true)) return
+        // Belt-and-suspenders: bail if already in a terminal state (e.g. cancel() raced).
+        if (_state.value !is PairingState.AwaitingPin) return
         try {
             val ps = PairSetup(seed = seed, pairingId = pairingId, pin = pin)
 
@@ -134,8 +157,13 @@ class PairingHandleImpl(
                 _state.value = PairingState.Completed(creds)
             }
         } catch (c: CancellationException) {
+            // Real coroutine cancellation (not a timeout) — re-throw so the
+            // coroutine machinery can propagate it; do NOT set Failed here
+            // (cancel() already set it, or the caller's scope was cancelled).
             throw c
         } catch (t: Throwable) {
+            // IOException (wraps TimeoutCancellationException from awaitNext),
+            // protocol errors, and any other non-CancellationException land here.
             if (_state.value is PairingState.AwaitingPin) {
                 _state.value = PairingState.Failed(t.message ?: t::class.simpleName ?: "pair-setup failed")
             }
@@ -150,24 +178,58 @@ class PairingHandleImpl(
      * Collects `(psNextConsumed + 1)` `PS_Next` frames from the replay-buffered
      * flow and returns the last one; increments the consumed counter so the next
      * call skips frames already handled.
+     *
+     * A [TimeoutCancellationException] (which is a [CancellationException] subclass)
+     * is caught here and re-thrown as a plain [IOException] so that [submitPin]'s
+     * `catch (t: Throwable)` — which re-throws real [CancellationException] but
+     * handles any other [Throwable] — will set state to [PairingState.Failed] with
+     * a structural message. This prevents a silent peer from leaving the handle
+     * stuck in [PairingState.AwaitingPin] forever.
      */
     private suspend fun awaitNext(): ByteArray {
         val want = psNextConsumed + 1
-        val frame = withTimeout(5_000) {
-            conn.frames()
-                .filter { (ft, _) -> ft == FrameType.PS_Next }
-                .take(want)
-                .toList()
-                .last()
+        val frame = try {
+            withTimeout(5_000) {
+                conn.frames()
+                    .filter { (ft, _) -> ft == FrameType.PS_Next }
+                    .take(want)
+                    .toList()
+                    .last()
+            }
+        } catch (e: TimeoutCancellationException) {
+            // Convert the CancellationException subtype to a plain IOException so
+            // submitPin's catch(t: Throwable) will set Failed rather than re-throwing.
+            // The message deliberately uses only structural information (no key bytes).
+            throw IOException("pair-setup: peer silent (timeout) at step $want", e)
         }
         psNextConsumed = want
         return frame.second
     }
 
+    /**
+     * Cancels the pairing attempt and closes the underlying connection.
+     *
+     * - If still in [PairingState.AwaitingPin], transitions to
+     *   [PairingState.Failed]`("cancelled")`. Terminal states ([PairingState.Completed],
+     *   [PairingState.Failed]) are never overwritten.
+     * - Offloads the actual [conn] close to [closerScope] (non-suspend, fire-and-forget).
+     *   If [conn] is a [CompanionConnection] its socket + read-loop are closed; if it
+     *   is any other [AutoCloseable] (e.g. a test double) its `close()` is invoked.
+     *   Errors during close are swallowed via [runCatching].
+     * - Safe to call multiple times and from any thread (idempotent state CAS,
+     *   close guarded by [runCatching]).
+     */
     override fun cancel() {
-        if (_state.value is PairingState.AwaitingPin) {
-            _state.value = PairingState.Failed("cancelled")
+        // Only flip to Failed if still AwaitingPin; never overwrite a terminal state.
+        _state.compareAndSet(PairingState.AwaitingPin, PairingState.Failed("cancelled"))
+
+        // Offload suspend close to a dedicated scope that won't be cancelled itself.
+        closerScope.launch {
+            when (val c = conn) {
+                is CompanionConnection -> runCatching { c.close() }
+                is AutoCloseable -> runCatching { c.close() }
+                else -> {}
+            }
         }
-        scope.cancel()
     }
 }

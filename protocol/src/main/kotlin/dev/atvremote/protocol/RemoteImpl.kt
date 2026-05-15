@@ -113,7 +113,12 @@ internal object RemoteConnect {
      */
     fun pair(device: AppleTvDevice): PairingHandle {
         val conn = CompanionConnection(device.host, device.port)
-        runBlocking { conn.connect() }
+        try {
+            runBlocking { conn.connect() }
+        } catch (t: Throwable) {
+            runCatching { runBlocking { conn.close() } }
+            throw t
+        }
         return PairingHandleImpl(conn)
     }
 }

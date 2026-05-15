@@ -7,8 +7,13 @@ import dev.atvremote.protocol.goldentrace.GoldenTrace
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
@@ -31,10 +36,14 @@ import kotlin.test.assertTrue
  *  - controller M1 (`PS_Start`) → emit accessory M2 (`inFrame(1)`) as `PS_Next`
  *  - controller M3 (`PS_Next`)  → emit accessory M4 (`inFrame(3)`) as `PS_Next`
  *  - controller M5 (`PS_Next`)  → emit accessory M6 (`inFrame(5)`) as `PS_Next`
+ *
+ * Also implements [AutoCloseable] so that [PairingHandleImpl.cancel]'s
+ * connection-close path (which dispatches to any [AutoCloseable] test double)
+ * is observable in tests without touching the locked [FrameTransport] API.
  */
 class ScriptedConnection private constructor(
     private val gt: GoldenTrace,
-) : FrameTransport, PairingKeys {
+) : FrameTransport, PairingKeys, AutoCloseable {
 
     override val seed: ByteArray get() = gt.fixedSeed
     override val pairingId: ByteArray get() = gt.fixedPairingId
@@ -48,9 +57,19 @@ class ScriptedConnection private constructor(
     private var replyStep = 0
     private val accessoryReplies = listOf(gt.inFrame(1), gt.inFrame(3), gt.inFrame(5))
 
+    /** Number of frames the controller has sent (M1, M3, M5 = 3 for a full exchange). */
+    var sendCount = 0
+        private set
+
+    /** Set to true when [close] is invoked; observable by tests asserting I1 cleanup. */
+    @Volatile
+    var closed = false
+        private set
+
     override fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames.asSharedFlow()
 
     override suspend fun send(type: FrameType, payload: ByteArray) {
+        sendCount++
         // Every controller pair-setup frame triggers exactly one accessory reply.
         if (replyStep < accessoryReplies.size) {
             _frames.emit(FrameType.PS_Next to accessoryReplies[replyStep])
@@ -58,9 +77,50 @@ class ScriptedConnection private constructor(
         }
     }
 
+    override fun close() {
+        closed = true
+    }
+
     companion object {
         fun fromGoldenTrace(name: String): ScriptedConnection =
             ScriptedConnection(GoldenTrace.load(name))
+    }
+}
+
+/**
+ * A connection double that never emits any inbound frames, simulating a silent
+ * (unresponsive) peer. Used to verify Fix C1: the 5 s [withTimeout] in
+ * [PairingHandleImpl.awaitNext] must convert a [TimeoutCancellationException]
+ * into an [IOException] so [submitPin] sets [PairingState.Failed] rather than
+ * leaving the handle stuck in [PairingState.AwaitingPin].
+ *
+ * Implements [PairingKeys] with the golden-trace's fixed seed / pairing id so
+ * [PairSetup] can be constructed (SRP is deterministic with the fixed inputs),
+ * and [AutoCloseable] for the cancel-close seam.
+ */
+class SilentScriptedConnection(
+    private val gt: GoldenTrace,
+) : FrameTransport, PairingKeys, AutoCloseable {
+
+    override val seed: ByteArray get() = gt.fixedSeed
+    override val pairingId: ByteArray get() = gt.fixedPairingId
+
+    private val _frames = MutableSharedFlow<Pair<FrameType, ByteArray>>(
+        replay = 16,
+        extraBufferCapacity = 64,
+    )
+
+    @Volatile
+    var closed = false
+        private set
+
+    override fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames.asSharedFlow()
+
+    // Never emits any reply frames — simulates a silent peer.
+    override suspend fun send(type: FrameType, payload: ByteArray) = Unit
+
+    override fun close() {
+        closed = true
     }
 }
 
@@ -70,5 +130,132 @@ class PairingHandleTest {
         assertTrue(handle.state.value is PairingState.AwaitingPin)
         handle.submitPin("1234")
         assertTrue(handle.state.value is PairingState.Completed)
+    }
+
+    /**
+     * Proves Fix C1: a silent peer (no accessory reply) causes [withTimeout] to fire
+     * a [TimeoutCancellationException], which [awaitNext] converts to an [IOException],
+     * which [submitPin]'s `catch (t: Throwable)` then uses to set [PairingState.Failed].
+     *
+     * Under [runTest]'s virtual-time scheduler, [withTimeout] expires instantly when
+     * there are no frames to collect — no real 5-second wait. The test is therefore
+     * deterministic and non-flaky.
+     *
+     * Without Fix C1 (i.e. the original code where [TimeoutCancellationException] escapes
+     * [submitPin]'s `catch (c: CancellationException) { throw c }` branch), [submitPin]
+     * would re-throw the exception without setting [PairingState.Failed], leaving the
+     * handle stuck in [PairingState.AwaitingPin] and `started` still true — violating
+     * the documented invariant.
+     */
+    @Test fun timeoutLeavesFailedNotStuck() = runTest {
+        val gt = GoldenTrace.load("pair-setup.json")
+        val conn = SilentScriptedConnection(gt)
+        val handle = PairingHandleImpl(conn)
+        assertTrue(handle.state.value is PairingState.AwaitingPin)
+
+        // submitPin will block at awaitNext() waiting for M2; withTimeout(5_000) fires
+        // immediately in runTest's virtual clock. The resulting IOException drives
+        // the catch(t: Throwable) branch to set Failed.
+        handle.submitPin("1234")
+
+        val state = handle.state.value
+        assertFalse(state is PairingState.AwaitingPin,
+            "handle must NOT remain AwaitingPin after a peer-silent timeout")
+        assertIs<PairingState.Failed>(state,
+            "handle must transition to Failed after peer-silent timeout, got: $state")
+    }
+
+    /**
+     * Proves Fix I2: the [AtomicBoolean] CAS guard in [submitPin] ensures that a
+     * second call to [submitPin] after a successful first call is a no-op. The
+     * [ScriptedConnection] has exactly 3 accessory replies (M2, M4, M6); if a second
+     * [submitPin] bypassed the guard and attempted M1 again, there would be no M2 reply
+     * available, causing either a hang or a spurious [PairingState.Failed] — neither of
+     * which should happen.
+     *
+     * The test also confirms the terminal-state protection: calling [submitPin] after
+     * [PairingState.Completed] must leave the state [PairingState.Completed], not raise
+     * an exception or flip to [PairingState.Failed].
+     *
+     * Without Fix I2 (non-atomic `var started`), two concurrent callers could both pass
+     * the `if (started)` check before either sets `started = true`, corrupting the
+     * protocol with duplicate M1 frames. Even in the non-concurrent sequential case the
+     * second call would re-enter and exhaust the scripted reply buffer.
+     */
+    @Test fun secondSubmitPinIsNoOp() = runTest {
+        val conn = ScriptedConnection.fromGoldenTrace("pair-setup.json")
+        val handle = PairingHandleImpl(conn)
+
+        handle.submitPin("1234")
+        assertIs<PairingState.Completed>(handle.state.value,
+            "first submitPin must reach Completed")
+        assertEquals(3, conn.sendCount,
+            "exactly 3 controller frames (M1, M3, M5) must be sent in one full exchange")
+
+        // Second call must be a no-op: CAS from false→true fails (already true),
+        // so the body never runs.
+        handle.submitPin("1234")
+        assertIs<PairingState.Completed>(handle.state.value,
+            "state must remain Completed after second submitPin")
+        assertEquals(3, conn.sendCount,
+            "sendCount must not increase — second submitPin must not send any frames")
+    }
+
+    /**
+     * Proves Fix I1: [PairingHandleImpl.cancel] must close the underlying connection
+     * (socket / read-loop leak prevention). The [ScriptedConnection] implements
+     * [AutoCloseable] and records whether [close] was invoked, so the test double's
+     * close hook is observable without modifying [CompanionConnection] or [FrameTransport].
+     *
+     * Also verifies:
+     * - State transitions from [PairingState.AwaitingPin] to [PairingState.Failed]
+     *   with reason "cancelled" on the first [cancel] call.
+     * - A second [cancel] call is idempotent: state stays [PairingState.Failed]
+     *   (not changed, no exception thrown).
+     * - Calling [cancel] on an already-[PairingState.Completed] handle does NOT
+     *   overwrite the terminal [PairingState.Completed] state — terminal-state
+     *   protection is intact.
+     *
+     * The [closerScope] launch in [cancel] is asynchronous. [advanceUntilIdle] drives
+     * the [runTest] virtual-time scheduler until all pending coroutines complete,
+     * making the close-flag assertion deterministic (no real sleeps needed).
+     *
+     * Without Fix I1, [cancel] only calls `scope.cancel()` on a dead scope and the
+     * real [CompanionConnection] (or test-double) close is never invoked — leaking
+     * the socket and the read-loop coroutine.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test fun cancelBeforeSubmitClosesAndFails() = runTest {
+        val conn = ScriptedConnection.fromGoldenTrace("pair-setup.json")
+        val handle = PairingHandleImpl(conn)
+        assertTrue(handle.state.value is PairingState.AwaitingPin)
+
+        // cancel() before any submitPin: must set Failed("cancelled") and close conn.
+        handle.cancel()
+        val stateAfterCancel = handle.state.value
+        assertIs<PairingState.Failed>(stateAfterCancel,
+            "cancel() before submitPin must set Failed, got: $stateAfterCancel")
+        assertEquals("cancelled", stateAfterCancel.reason,
+            "Failed reason must be 'cancelled'")
+
+        // Advance virtual clock so the closerScope.launch { conn.close() } runs.
+        advanceUntilIdle()
+        assertTrue(conn.closed,
+            "cancel() must invoke close() on the connection to prevent socket/read-loop leak")
+
+        // Second cancel() is idempotent: state stays Failed, no exception thrown.
+        handle.cancel()
+        assertIs<PairingState.Failed>(handle.state.value,
+            "second cancel() must not change state")
+
+        // Calling cancel() on a Completed handle must NOT overwrite Completed.
+        val conn2 = ScriptedConnection.fromGoldenTrace("pair-setup.json")
+        val handle2 = PairingHandleImpl(conn2)
+        handle2.submitPin("1234")
+        assertIs<PairingState.Completed>(handle2.state.value,
+            "handle2 must be Completed after submitPin")
+        handle2.cancel()
+        assertIs<PairingState.Completed>(handle2.state.value,
+            "cancel() on a Completed handle must NOT flip state to Failed")
     }
 }
