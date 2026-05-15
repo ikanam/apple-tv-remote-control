@@ -2,17 +2,12 @@ package dev.atvremote.protocol.connection
 
 import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.opack.Opack
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.withContext
-import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Order
-import org.junit.jupiter.api.TestMethodOrder
 import kotlin.test.Test
 import kotlin.test.assertEquals
 
@@ -42,17 +37,17 @@ class FakeConnection(
     }
 }
 
-@TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class CompanionProtocolTest {
-    @Order(1)
     @Test fun exchangeMatchesByXid() = runTest {
         val fake = FakeConnection { sentOpack ->
             val xid = (Opack.unpack(sentOpack).first as Map<*, *>)["_x"]
             Opack.pack(mapOf("_t" to 3, "_x" to xid, "_c" to mapOf("ok" to true)))
         }
-        val proto = CompanionProtocol(fake)
+        // bind collector to runTest scheduler so withTimeout virtual-time is coherent (no real/virtual race)
+        val proto = CompanionProtocol(fake, coroutineContext)
         val resp = proto.exchange("_systemInfo", mapOf("name" to "Pixel"))
         assertEquals(true, (resp["_c"] as Map<*, *>)["ok"])
+        proto.close()
     }
 
     /**
@@ -65,17 +60,12 @@ class CompanionProtocolTest {
      * they are all distinct (no two calls were assigned the same 16-bit id, which would have
      * caused one to clobber the other in the pending map and produce a hang or wrong result).
      *
-     * Parallelism & determinism: the body runs under withContext(Dispatchers.Default) so that
-     * withTimeout inside exchange() uses the real clock (not virtual time). This also causes the
-     * 50 async coroutines to run on real thread-pool threads, genuinely exercising AtomicInteger's
-     * memory-visibility guarantee and ConcurrentHashMap's thread-safety. The test is still
-     * deterministic: FakeConnection echoes requests synchronously in send(), so responses are
-     * always in the replay buffer before exchange() suspends; no sleeps or timing-sensitive
-     * assertions are needed. Running under Dispatchers.Default also ensures the test fully drains
-     * all thread-pool work before returning, preventing cross-test interference with
-     * exchangeMatchesByXid() (which relies on Dispatchers.Default threads being idle).
+     * Parallelism & determinism: the collector is bound to runTest's scheduler via coroutineContext,
+     * so withTimeout inside exchange() uses virtual time. FakeConnection echoes requests
+     * synchronously in send(), so responses are always in the replay buffer before exchange()
+     * suspends; no sleeps or timing-sensitive assertions are needed. The AtomicInteger counter
+     * and ConcurrentHashMap are still exercised for correctness of the correlation logic.
      */
-    @Order(2)
     @Test fun concurrentExchangesDoNotCollideXids() = runTest {
         val fake = FakeConnection { sentOpack ->
             @Suppress("UNCHECKED_CAST")
@@ -84,14 +74,12 @@ class CompanionProtocolTest {
             // Echo _x in both the correlation field and inside _c so callers can verify identity.
             Opack.pack(mapOf("_t" to 3, "_x" to xid, "_c" to mapOf("echo" to xid)))
         }
-        val proto = CompanionProtocol(fake)
+        val proto = CompanionProtocol(fake, coroutineContext)
 
-        val results: List<Map<String, Any?>> = withContext(Dispatchers.Default) {
-            coroutineScope {
-                (0 until 50).map { i ->
-                    async { proto.exchange("_cmd", mapOf("n" to i)) }
-                }.awaitAll()
-            }
+        val results: List<Map<String, Any?>> = coroutineScope {
+            (0 until 50).map { i ->
+                async { proto.exchange("_cmd", mapOf("n" to i)) }
+            }.awaitAll()
         }
 
         // Every call must have completed (awaitAll would throw if any timed out).
@@ -120,11 +108,5 @@ class CompanionProtocolTest {
         }
 
         proto.close()
-        // Drain Dispatchers.Default: submit a no-op task and await it to ensure all prior
-        // Dispatchers.Default work (including the cancelled collectFrames coroutine) has fully
-        // completed before this runTest block returns. This prevents cross-test interference with
-        // exchangeMatchesByXid(), which requires Dispatchers.Default threads to be idle so its
-        // collectFrames coroutine can be scheduled promptly under runTest's virtual time clock.
-        withContext(Dispatchers.Default) {}
     }
 }

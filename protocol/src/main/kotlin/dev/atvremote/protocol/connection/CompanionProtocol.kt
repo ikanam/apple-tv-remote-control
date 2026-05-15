@@ -4,8 +4,16 @@ import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.opack.Opack
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.CoroutineContext
 import kotlin.random.Random
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -27,9 +35,14 @@ interface FrameTransport {
  * - Event fan-out for `_t == 1` messages
  * - Auth exchange (pairing: PS/PV frame pairs)
  */
-class CompanionProtocol(private val conn: FrameTransport) {
+class CompanionProtocol(
+    private val conn: FrameTransport,
+    context: CoroutineContext = SupervisorJob() + Dispatchers.Default,
+) {
 
-    private val scope = CoroutineScope(Dispatchers.Default + SupervisorJob())
+    // Always create a fresh SupervisorJob as a child of any Job in the provided context.
+    // This ensures close() cancels only this scope's job, never the caller's job (e.g. a test scope).
+    private val scope = CoroutineScope(context + SupervisorJob(context[Job]))
 
     // XID counter: atomic so concurrent exchange() calls never duplicate a correlation id.
     // Masked to 16 bits on each use to stay within Companion's 16-bit _x field range.
