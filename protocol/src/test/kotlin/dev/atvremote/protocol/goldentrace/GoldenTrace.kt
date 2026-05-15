@@ -69,7 +69,8 @@ class GoldenTrace private constructor(
     val fixedPairingId: ByteArray get() = bytes("controllerPairingId")
 
     /** The PIN the synthetic Apple TV "displays" (pair-setup fixture only). */
-    val pin: String get() = fixedInputs["pin"] as String
+    val pin: String get() = (fixedInputs["pin"]
+        ?: error("fixture '$kind' has no fixedInput 'pin' (pair-setup only)")) as String
 
     /** Controller X25519 ephemeral private (pair-verify fixture only). */
     val fixedX25519Priv: ByteArray get() = bytes("controllerX25519Priv")
