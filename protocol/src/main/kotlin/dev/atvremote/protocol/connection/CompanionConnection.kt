@@ -4,6 +4,7 @@ import dev.atvremote.protocol.crypto.ChaCha
 import dev.atvremote.protocol.frame.Frame
 import dev.atvremote.protocol.frame.FrameType
 import kotlinx.coroutines.*
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.sync.Mutex
@@ -38,8 +39,8 @@ class CompanionConnection(private val host: String, private val port: Int) {
 
     /** Encodes and sends a frame; safe to call from any coroutine. */
     suspend fun send(type: FrameType, payload: ByteArray) {
-        val encoded = Frame.encode(type, payload, cipher)
         sendMutex.withLock {
+            val encoded = Frame.encode(type, payload, cipher)
             withContext(Dispatchers.IO) {
                 socket.getOutputStream().write(encoded)
                 socket.getOutputStream().flush()
@@ -92,6 +93,8 @@ class CompanionConnection(private val host: String, private val port: Int) {
                 accumulator.reset()
                 accumulator.write(buf)
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (_: Exception) {
             // Socket closed or cancelled — exit gracefully
         }
