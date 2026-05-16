@@ -36,7 +36,16 @@ class ConnectionService : Service() {
     override fun onBind(intent: Intent?): IBinder = binder
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(1, buildNotification())
+        // API-34 typed foreground start (carried-forward Plan-3 T7 review item;
+        // triggered now that MainActivity startForegroundService's this).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(
+                1, buildNotification(),
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } else {
+            startForeground(1, buildNotification())
+        }
         return START_STICKY
     }
 
