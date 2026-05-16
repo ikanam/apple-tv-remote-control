@@ -30,11 +30,17 @@ import androidx.compose.ui.unit.dp
 import dev.atvremote.app.haptics.Haptics
 import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.vm.RemoteViewModel
+import dev.atvremote.protocol.RemoteButton
 
 /**
  * Plan-3 amendment D: the Hero mirrors the physical Siri Remote, top→bottom:
  * Power (top bar, right) → Trackpad → Back · TV/Home → Play/Pause · Volume →
  * bottom-left gated Keyboard (physical Mute slot). No Mute/Siri/Apps.
+ *
+ * Per the 2026-05-17 spec (owner real-device direction, supersedes the
+ * 2026-05-16 trackpad-only decision): the trackpad is now visibly bordered AND
+ * an explicit D-pad (Up/Down/Left/Right) + center OK (Select) is added between
+ * the trackpad and the Back·TV/Home row; trackpad swipe/edge-zone behavior retained.
  *
  * Reconciliation C: the base `HeroCallbacks` data class is superseded by this
  * amended signature. `keyboardProbe` (NOT a `vm.session()` accessor — that does
@@ -97,6 +103,13 @@ fun HeroScreen(
                 tuning = SwipeTuning.DEFAULT,
                 onEvent = vm::onTouchEvent,
                 modifier = Modifier,
+            )
+            DpadRow(
+                onUp     = { vm.pressButton(RemoteButton.Up) },
+                onDown   = { vm.pressButton(RemoteButton.Down) },
+                onLeft   = { vm.pressButton(RemoteButton.Left) },
+                onRight  = { vm.pressButton(RemoteButton.Right) },
+                onSelect = { vm.pressButton(RemoteButton.Select) },
             )
             // "Back" maps to RemoteButton.Menu: Apple TV's Menu button IS the
             // back action; the physical Siri Remote labels it back.

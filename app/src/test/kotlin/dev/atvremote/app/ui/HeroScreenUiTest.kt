@@ -45,5 +45,10 @@ class HeroScreenUiTest {
         rule.onAllNodesWithContentDescription("Mute").assertCountEquals(0)
         rule.onAllNodesWithContentDescription("Siri").assertCountEquals(0)
         rule.onAllNodesWithContentDescription("Apps").assertCountEquals(0)
+        rule.onNodeWithContentDescription("Up").assertExists()
+        rule.onNodeWithContentDescription("Down").assertExists()
+        rule.onNodeWithContentDescription("Left").assertExists()
+        rule.onNodeWithContentDescription("Right").assertExists()
+        rule.onNodeWithContentDescription("Select").assertExists()
     }
 }

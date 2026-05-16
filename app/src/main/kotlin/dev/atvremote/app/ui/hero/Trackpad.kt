@@ -1,6 +1,7 @@
 package dev.atvremote.app.ui.hero
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -22,6 +23,7 @@ import dev.atvremote.app.swipe.TouchEvent
 /**
  * Circular touch trackpad. Raw pointer samples are funneled into the pure
  * SwipeEngine (TDD'd in Task 3); emitted TouchEvents go to onEvent (Task 10 VM).
+ * A 1.dp outline border makes the circular boundary discoverable on dark surfaces.
  */
 @Composable
 fun Trackpad(
@@ -37,6 +39,7 @@ fun Trackpad(
             .testTag("trackpad")
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             .pointerInput(tuning) {
                 val engine = SwipeEngine(tuning, size.width.toFloat(), size.height.toFloat())
                 awaitPointerEventScope {

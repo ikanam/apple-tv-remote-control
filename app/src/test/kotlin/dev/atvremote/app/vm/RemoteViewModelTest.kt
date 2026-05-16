@@ -122,4 +122,25 @@ class RemoteViewModelTest {
         dispatcher.scheduler.advanceUntilIdle()
         assertEquals(listOf(true, false), s.powerCalls)
     }
+
+    @Test fun dpadButtonsMapToProtocol() = runTest {
+        val s = FakeSession()
+        val (vm, _) = vm(s)
+        vm.pressButton(RemoteButton.Up)
+        vm.pressButton(RemoteButton.Down)
+        vm.pressButton(RemoteButton.Left)
+        vm.pressButton(RemoteButton.Right)
+        vm.pressButton(RemoteButton.Select)
+        dispatcher.scheduler.advanceUntilIdle()
+        assertEquals(
+            listOf(
+                RemoteButton.Up to true, RemoteButton.Up to false,
+                RemoteButton.Down to true, RemoteButton.Down to false,
+                RemoteButton.Left to true, RemoteButton.Left to false,
+                RemoteButton.Right to true, RemoteButton.Right to false,
+                RemoteButton.Select to true, RemoteButton.Select to false,
+            ),
+            s.buttons,
+        )
+    }
 }
