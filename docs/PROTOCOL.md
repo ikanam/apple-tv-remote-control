@@ -71,6 +71,41 @@ Source: `pyatv/protocols/companion/api.py` (master, 2026-05-16)
 All three corrections are reflected in `HidCommands.kt` (implementation) and
 `HidClickTest.kt` (test expectations).
 
+### Power commands (Task 11)
+
+Source: `pyatv/protocols/companion/api.py` and `pyatv/protocols/companion/__init__.py` (master, 2026-05-16)
+
+**HID power commands** (`HidCommand` enum api.py L35; `Sleep` L49, `Wake` L50):
+- `Wake = 13` — `turn_on` (__init__.py L277): `hid_command(False, HidCommand.Wake)` → `_hidC {_hBtS:2, _hidC:13}`
+- `Sleep = 12` — `turn_off` (__init__.py L284): `hid_command(False, HidCommand.Sleep)` → `_hidC {_hBtS:2, _hidC:12}`
+- `down=False` → `_hBtS:2` (button-UP / release only); `hid_command` api.py L288–291.
+
+**Status — FetchAttentionState** (`fetch_attention_state` api.py L437–445):
+- Sent via `_send_command` (L439) → our `exchange()` (awaits reply, `_t=2`).
+- Response shape: `resp["_c"]["state"]` — `_c` is a **map** with key `"state"`, NOT a bare int.
+- SystemStatus mapping (`_system_status_to_power_state` __init__.py L256–265):
+
+| `_c["state"]` | `SystemStatus` | `PowerStatus` |
+|---------------|----------------|---------------|
+| `0x01` | Asleep | Off |
+| `0x02` | Screensaver | On |
+| `0x03` | Awake | On |
+| `0x04` | Idle | On |
+| `0x00` | Unknown | Unknown |
+| other | — | Unknown |
+
+**Event subscriptions** (SystemStatus, TVSystemStatus — __init__.py L228–232) are Task 17 (EventSubscriptions), out of scope for T11.
+
+#### Plan correction (Task 11 — pyatv wins)
+
+The plan described `resp["_c"]` as a bare int. pyatv `fetch_attention_state` (api.py L440–445) reads
+`content = resp.get("_c")` then `SystemStatus(content["state"])` — `_c` is a dict/map keyed by `"state"`.
+The event handler `_handle_system_status_update` (__init__.py L249) also reads `data["state"]`.
+`PowerController.status()` and `PowerControllerTest.statusMapsSystemStatus` are corrected to use
+`resp["_c"]["state"]` (map path primary; bare-int fallback kept for defensive coding only).
+
+---
+
 #### Plan erratum (Tasks 3 & 7)
 
 Plan-2 Task 3 (`TouchTransport`) and Task 7 (`HidCommands`) code blocks specified
