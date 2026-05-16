@@ -10,6 +10,19 @@
 
 ---
 
+## Plan-2 revision log (2026-05-16) — reconciled to the post-Task-17 repo
+
+This plan was first written 2026-05-15 20:18, **before** Plan 1's Task 17 (real-device validation) finished. Task 17 changed the exact Plan-1 surface Plan 2 builds on. This revision reconciles the plan to the actual repo and bakes in the Task-17 protocol-debugging discipline. **Read this before executing any task.**
+
+- **A — `CommandChannel`/events.** Task 17 already shipped `dev.atvremote.protocol.connection.CommandChannel` (`exchange`/`sendEvent` **only** — no `events`), `CompanionProtocol : CommandChannel`, and doubles `RecordingProtocol`/`RecordingProtocol2`/`FakeConnection`. Task 2 below is rewritten: it does **not** redeclare `CommandChannel`; it adds `interface SessionChannel : CommandChannel { val events }` in `connection/`, adds `: SessionChannel`+`override` to `CompanionProtocol` (its `events` already matches), and adds the new shared `FakeProtocol` implementing `SessionChannel`. Plan 1's existing doubles stay untouched (they only implement `CommandChannel`). Controllers needing inbound events (`KeyboardController` T16, `EventSubscriptions` T17) depend on `SessionChannel`; the rest on `CommandChannel`.
+- **B — `CompanionSessionImpl` ctor + `RemoteConnect`.** Real ctor is `CompanionSessionImpl(channel: CommandChannel, sid: Long = 0L, onClose: suspend () -> Unit = {})` (the field is already `channel`; `sid`/`onClose` are the C5/C6 fixes — Plan 2 must not clobber them). The connect entry point is `internal object RemoteConnect.connect` in `RemoteImpl.kt` (not a `RemoteImpl` class); `AppleTvRemote.connect` already delegates to it. All "MODIFY `RemoteImpl.connect`" notes mean `RemoteConnect.connect`.
+- **C — reconnection must replay the Task-17-verified sequence.** Task 18's supervisor is rewritten to mirror `RemoteConnect.connect` exactly, including C3 (await the **2nd** `PV_Next` via `.filter{PV_Next}.drop(1).first()` — replay-buffer caveat — *before* `enableEncryption`), C5 (verbatim `String(credentials.clientId)` as device/clientId), C6 (`handshake.sid` threaded into `CompanionSessionImpl`). Socket-drop detection keys off **real socket close, not frame-flow completion** — Task 17's `readLoop` now resyncs past a bad frame, so a transient decode failure no longer ends the flow. `subscriptions.restore()` is provided by Plan 2 **Task 17** (`EventSubscriptions`), not Plan 1.
+- **D — pyatv-wins, mandatory.** Per CLAUDE.md's protocol-debugging rule, every protocol task (T3, T7, T9, T11, T12, T14, T15, T16, T17, T18) has a **Step 0: read the exact pyatv source and diff before implementing/fixing.** The synthetic Task-10 oracle/fixtures are NOT real-device truth — when they disagree with pyatv/real tvOS, pyatv wins (correct our code AND the fixture).
+- **E — real pyatv capture is a real prerequisite.** Plan 1 only paired *our* client with 客厅; **pyatv itself was never paired** with the device (real capture was deferred). The golden-trace strategy for Plan 2 is **real pyatv capture** (not synthetic). Tasks 5/14 gain a "Step 0: install + pair pyatv with 客厅" precondition; capture/CLI steps use the concrete env from CLAUDE.md (no `<ATV_ID>` placeholders): `JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home`, device `客厅 / AppleTV14,1 / 192.168.7.134:49153` (tvOS ≈715.2), sandbox-off + optional `ATVREMOTE_MDNS_ADDR=192.168.7.131` for mDNS; integrate the existing `trace-tools` `CredentialStore`/`GoldenTraceGen`/`CaptureGuide.md`.
+- **F — mechanical re-pinning.** `GoldenTrace` is a `class` with a `companion object`, `load()`, `out(i)`, `inFrame(i)`, `StepRec`; Plan 2's additive accessors stay, re-pinned to that shape. The File Structure block now lists the existing `trace-tools` files. No task is re-ordered or dropped (scope choice); Task 2 is rewritten in place.
+
+---
+
 ## Depends on Plan 1
 
 This plan **extends** `docs/superpowers/plans/2026-05-15-atv-remote-plan-1-protocol-foundation.md`. It does **not** redefine Plan 1 types. Plan 1 must be fully implemented (Tasks 1–17 complete: `:protocol` discovers, pairs, verifies, runs the handshake, and `CompanionSessionImpl.button()` works against a real tvOS 18 device). Plan 2 reuses these Plan 1 components verbatim:
@@ -22,10 +35,11 @@ This plan **extends** `docs/superpowers/plans/2026-05-15-atv-remote-plan-1-proto
 - `dev.atvremote.protocol.connection.CompanionProtocol` — `exchange(name, content)`, `sendEvent(name, content)`, `val events: SharedFlow<Pair<String, Map<String,Any?>>>`, `sendAuth`
 - `dev.atvremote.protocol.pairing.PairVerify`
 - `dev.atvremote.protocol.session.SessionHandshake`
-- `dev.atvremote.protocol.session.CompanionSessionImpl` (Plan 1: `button()`, `close()`)
+- `dev.atvremote.protocol.session.CompanionSessionImpl` — real ctor `(channel: CommandChannel, sid: Long = 0L, onClose: suspend () -> Unit = {})`; Plan 1 members `button()`, `close()`
+- `dev.atvremote.protocol.connection.CommandChannel` (Task-17: `exchange`/`sendEvent` only) and `dev.atvremote.protocol.RemoteConnect` (`internal object` in `RemoteImpl.kt`: `connect()`, `pair()`; `AppleTvRemote` delegates to it)
 - LOCKED Plan 1 public types in `Api.kt`: `AppleTvDevice`, `HapCredentials`, `PairingState`, `RemoteButton`, `DeviceDiscovery`, `CompanionSession`, `AppleTvRemote`, `PairingHandle`.
 
-Plan 2 does **not** restructure these. It only: (a) adds new public types/methods to `Api.kt`, (b) adds new internal helpers in `session/` and a new `session/rti/` sub-package, (c) extends `CompanionSessionImpl`, (d) wraps `RemoteImpl.connect` with a reconnection supervisor, (e) extends `:trace-tools` CLI.
+Plan 2 does **not** restructure these. It only: (a) adds new public types/methods to `Api.kt`, (b) adds new internal helpers in `session/` and a new `session/rti/` sub-package, (c) extends `CompanionSessionImpl`, (d) wraps `RemoteConnect.connect` (the `internal object` in `RemoteImpl.kt`) with a reconnection supervisor, (e) extends `:trace-tools` CLI, (f) additively adds `interface SessionChannel : CommandChannel { val events }` in `connection/` (does NOT redeclare the Task-17 `CommandChannel`).
 
 ### LOCKED API extension contract (added to `Api.kt` in Task 1; Plan 3 consumes these exact names/signatures)
 
@@ -78,8 +92,9 @@ protocol/src/main/kotlin/dev/atvremote/protocol/
   session/rti/KeyedArchiver.kt                 CREATE: minimal NSKeyedArchiver/Unarchiver reader+writer (binary plist)
   session/rti/RtiPayloads.kt                   CREATE: RTI text payload builders + tiD document-state reader (port plist_payloads.py)
   session/Plist.kt                             CREATE: Apple binary plist (bplist00) read/write subset used by keyed archiver
-  connection/ResilientSession.kt               CREATE: reconnect supervisor (backoff + pair-verify + handshake + restore subs)
-  RemoteImpl.kt                                MODIFY: connect() returns a ResilientSession-backed CompanionSession
+  connection/CompanionProtocol.kt              MODIFY: add `: SessionChannel` + `override` on existing `events` (no behavior change). The Task-17 `CommandChannel` is NOT redeclared; `SessionChannel` is added here.
+  connection/ResilientSession.kt               CREATE: reconnect supervisor (backoff + pair-verify + handshake + restore subs) — replays RemoteConnect.connect's C3/C5/C6 sequence
+  RemoteImpl.kt                                MODIFY: `RemoteConnect.connect` (internal object) returns a ResilientSession-backed CompanionSession
 protocol/src/test/kotlin/dev/atvremote/protocol/
   session/TouchTransportTest.kt                CREATE
   session/HidClickTest.kt                      CREATE
@@ -104,9 +119,11 @@ protocol/src/test/resources/goldentrace/
   launch-app.json                              CREATE (captured: atvremote ... launch_app)
   power-status.json                            CREATE (captured: atvremote ... power_state)
   media-play.json                              CREATE (captured: atvremote ... play)
-trace-tools/src/main/kotlin/dev/atvremote/tracetools/
-  SmokeCli.kt                                  MODIFY: add swipe/click/text/apps/power/media subcommands
-  CaptureGuide.md                              MODIFY: add Plan-2 capture commands
+trace-tools/src/main/kotlin/dev/atvremote/tracetools/   (existing Plan-1 files: SmokeCli.kt, SmokeCli.md, CaptureGuide.md, CredentialStore.kt, GoldenTraceGen.kt)
+  SmokeCli.kt                                  MODIFY: add swipe/click/text/apps/power/media subcommands (reuse CredentialStore for stored creds)
+  SmokeCli.md                                  MODIFY: document the new subcommands
+  CaptureGuide.md                              MODIFY: add Plan-2 capture commands + pyatv-pairing precondition
+  GoldenTraceGen.kt                            REUSE/EXTEND: existing capture helper for the new fixtures (do not reinvent)
 docs/PROTOCOL.md                               MODIFY: append verified Plan-2 wire behavior notes
 ```
 
@@ -227,7 +244,7 @@ interface CompanionSession {
 }
 ```
 
-Plan 1's `CompanionSessionImpl` will now fail to compile (missing overrides). That is expected and resolved in Tasks 4, 7, 9, 11, 12, 13, 15. To keep the module compiling **between** Plan-2 tasks, add `TODO()`-free temporary minimal `override` stubs to `CompanionSessionImpl` that throw `NotImplementedError()` for each new member now, in this same step (they are replaced with real bodies in later tasks; each later task's test asserts the real behavior). Concretely add to `CompanionSessionImpl`:
+Post-Task-17 `CompanionSessionImpl` will now fail to compile (missing overrides). That is expected and resolved in Tasks 4 (touch), 7 (click), 9 (apps), 11 (power), 12 (media), 16 (keyboard get/set/clear/append + `keyboardFocus`), with the zero-stubs/`connectionState` wiring gate in Task 19. **Do NOT change its constructor** — it is already `CompanionSessionImpl(channel: CommandChannel, sid: Long = 0L, onClose: suspend () -> Unit = {})` (the `sid`/`onClose` params are the C5/C6 real-device fixes; `RemoteConnect.connect` and `ButtonTest`/`SessionHandshakeTest` depend on this exact shape). Only add member overrides into the class body. To keep the module compiling **between** Plan-2 tasks, add `TODO()`-free temporary minimal `override` stubs that throw `NotImplementedError()` for each new member now, in this same step (replaced with real bodies in later tasks). Concretely add to `CompanionSessionImpl`'s body (do not touch the primary constructor or the existing `button`/`close`):
 
 ```kotlin
 override suspend fun touch(x: Int, y: Int, phase: TouchPhase): Unit = throw NotImplementedError()
@@ -259,13 +276,14 @@ git commit -m "feat(api): add Plan-2 Companion types and extend CompanionSession
 
 ---
 
-## Task 2: Shared FakeProtocol test double
+## Task 2: SessionChannel + shared FakeProtocol test double
 
 **Files:**
+- Modify: `protocol/src/main/kotlin/dev/atvremote/protocol/connection/CompanionProtocol.kt`
 - Create: `protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocol.kt`
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocolSelfTest.kt`
 
-Plan-2 controllers all talk to a small slice of `CompanionProtocol`. To unit-test them without a device, introduce a narrow interface they depend on, plus a fake. This task adds the interface to the production code and the fake to test code.
+**Reconciliation (revision-log A — read it):** Task 17 already shipped `dev.atvremote.protocol.connection.CommandChannel` with `exchange`/`sendEvent` **only** (no `events`), `CompanionProtocol : CommandChannel`, and doubles `RecordingProtocol` (`SessionHandshakeTest`), `RecordingProtocol2` (`ButtonTest`), `FakeConnection` (`CompanionProtocolTest`) bound to it. **Do NOT redeclare `CommandChannel`.** Plan-2 controllers that consume inbound events (`KeyboardController` T16, `EventSubscriptions` T17) need `events` *through the channel*; the rest need only request/response. This task additively adds `interface SessionChannel : CommandChannel { val events }` in `connection/`, makes `CompanionProtocol` also implement it (its `events` member already matches — just add the supertype + `override`), and adds the new shared `FakeProtocol : SessionChannel` for Plan-2 tests. Plan 1's three existing doubles only implement `CommandChannel` and stay **untouched** (they need no `events`). Controllers depend on the narrowest type they need: `CommandChannel` for command-only (`TouchTransport`, `HidCommands`, `AppsController`, `PowerController`, `MediaController`), `SessionChannel` for `KeyboardController`/`EventSubscriptions`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -300,33 +318,35 @@ class FakeProtocolSelfTest {
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `./gradlew :protocol:test --tests dev.atvremote.protocol.session.FakeProtocolSelfTest`
-Expected: FAIL — `FakeProtocol` / `CommandChannel` unresolved.
+Expected: FAIL — `FakeProtocol` / `SessionChannel` unresolved.
 
 - [ ] **Step 3: Implement**
 
-Add the production interface in `protocol/src/main/kotlin/dev/atvremote/protocol/session/CompanionSessionImpl.kt` (top of file, package `dev.atvremote.protocol.session`):
+Add the `SessionChannel` interface in `protocol/src/main/kotlin/dev/atvremote/protocol/connection/CompanionProtocol.kt` (same package as the existing `CommandChannel`, right after it). It **extends** the existing Task-17 `CommandChannel` — it does not redeclare `exchange`/`sendEvent`:
 
 ```kotlin
-/** The minimal protocol surface Plan-2 controllers need. CompanionProtocol implements it. */
-interface CommandChannel {
-    suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?>
-    suspend fun sendEvent(name: String, content: Map<String, Any?>)
+/**
+ * [CommandChannel] plus the inbound event stream. Implemented by [CompanionProtocol]
+ * (its `events` member already exists). Consumed by KeyboardController / EventSubscriptions.
+ */
+interface SessionChannel : CommandChannel {
     val events: kotlinx.coroutines.flow.SharedFlow<Pair<String, Map<String, Any?>>>
 }
 ```
 
-Make Plan 1's `CompanionProtocol` implement it: in `connection/CompanionProtocol.kt` change the class declaration to `class CompanionProtocol(...) : dev.atvremote.protocol.session.CommandChannel { ... }`. `exchange`, `sendEvent`, and `events` already exist with matching signatures from Plan 1; only add the `: CommandChannel` supertype and `override` modifiers on those three members. No behavior change.
+Make `CompanionProtocol` implement it: change `class CompanionProtocol(...) : CommandChannel {` to `class CompanionProtocol(...) : SessionChannel {`. Its `val events: SharedFlow<...>` already exists with the exact matching signature (Task 17) — only add the `override` modifier to it. `exchange`/`sendEvent` already `override` `CommandChannel`. No behavior change. Plan 1's `RecordingProtocol`/`RecordingProtocol2`/`FakeConnection` are NOT modified (they implement `CommandChannel`, which is unchanged).
 
-Create the test double:
+Create the shared Plan-2 test double (note: the existing Plan-1 doubles keep their names; this is the new shared one for Plan-2 controller tests):
 
 ```kotlin
 // protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocol.kt
 package dev.atvremote.protocol.session
 
+import dev.atvremote.protocol.connection.SessionChannel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 
-class FakeProtocol : CommandChannel {
+class FakeProtocol : SessionChannel {
     val exchanges = mutableListOf<Pair<String, Map<String, Any?>>>()
     val sentEvents = mutableListOf<Pair<String, Map<String, Any?>>>()
     var onExchange: (String, Map<String, Any?>) -> Map<String, Any?> = { _, _ -> emptyMap() }
@@ -352,8 +372,8 @@ Expected: PASS. Also `./gradlew :protocol:compileKotlin` — BUILD SUCCESSFUL.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add protocol/src/main/kotlin/dev/atvremote/protocol/session/CompanionSessionImpl.kt protocol/src/main/kotlin/dev/atvremote/protocol/connection/CompanionProtocol.kt protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocol.kt protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocolSelfTest.kt
-git commit -m "test(session): CommandChannel interface + shared FakeProtocol double"
+git add protocol/src/main/kotlin/dev/atvremote/protocol/connection/CompanionProtocol.kt protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocol.kt protocol/src/test/kotlin/dev/atvremote/protocol/session/FakeProtocolSelfTest.kt
+git commit -m "test(session): add SessionChannel (extends Task-17 CommandChannel) + shared FakeProtocol double"
 ```
 
 ---
@@ -365,6 +385,10 @@ git commit -m "test(session): CommandChannel interface + shared FakeProtocol dou
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/TouchTransportTest.kt`
 
 pyatv wire facts (source): touch start command `_touchStart` content `{ "_height":1000.0,"_tFl":0,"_width":1000.0 }` resets the base timestamp; per-event command `_hidT` content `{ "_ns": <ns since touchStart>, "_tFg":1, "_cx":x, "_cy":y, "_tPh":phase.value }`; touch stop command `_touchStop` content `{ "_i":1 }`. x,y clamped to `[0,1000]`. Swipe interpolates start→end at ~16ms steps: `Press` at start, `Hold` mid, `Release` at end.
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Before the test/code, read the **exact** pyatv source this is ported from: in a `postlund/pyatv` checkout (or `raw.githubusercontent.com/postlund/pyatv/master/...`) run `grep -rn '_touchStart\|_hidT\|HidCommand' pyatv/protocols/companion/` to pin the precise file, read it, and confirm the `_touchStart`/`_hidT`/`_touchStop` content + phase values against it. pyatv interoperates with real tvOS and is authoritative; the synthetic Task-10 fixtures are NOT real-device truth — on any disagreement **pyatv wins** (fix our code AND the fixture). If reality differs from the "pyatv wire facts" line above, correct that line and `docs/PROTOCOL.md`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -562,7 +586,7 @@ Expected: FAIL — `touch()` still throws `NotImplementedError` (the Task 1 stub
 
 - [ ] **Step 3: Implement**
 
-In `CompanionSessionImpl`, ensure the class has a `CommandChannel` it talks to (Plan 1 constructed it from `CompanionProtocol`; `CompanionProtocol` now implements `CommandChannel` per Task 2). Add a lazily-created `TouchTransport` field and replace the stub:
+In `CompanionSessionImpl`, the class **already holds** `private val channel: CommandChannel` as its primary-ctor param (Task-17 shape `(channel, sid, onClose)`; `CompanionProtocol` satisfies `CommandChannel`). **Do not rename it, do not change the constructor.** Add a lazily-created `TouchTransport` field and replace the stub:
 
 ```kotlin
 private val touchTransport by lazy { TouchTransport(channel) }
@@ -572,7 +596,7 @@ override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
 }
 ```
 
-Here `channel` is the `CommandChannel` reference the impl already holds (rename Plan 1's `proto` field type to `CommandChannel` if needed — `CompanionProtocol` satisfies it; no behavior change to `button`/`close`). Remove the `throw NotImplementedError()` body for `touch`.
+`channel` is the existing primary-ctor `CommandChannel` field (no rename, no ctor change; `button`/`close` untouched). Remove the `throw NotImplementedError()` body for `touch`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -599,14 +623,28 @@ git commit -m "feat(session): CompanionSession.touch via TouchTransport"
 - Create: `protocol/src/test/resources/goldentrace/media-play.json`
 - Modify: `trace-tools/src/main/kotlin/dev/atvremote/tracetools/CaptureGuide.md`
 
-This task produces fixtures, not code. Each fixture uses the **same JSON schema as Plan 1 Task 10**: `{ "steps": [ { "dir": "out|in", "frameType": int, "opackHexOrTlv": "...", "decoded": {...} } ] }`. Reuse Plan 1's `GoldenTrace` test helper to read them.
+This task produces fixtures, not code. Each fixture uses the **same JSON schema as Plan 1 Task 10**: `{ "steps": [ { "dir": "out|in", "frameType": int, "opackHexOrTlv": "...", "decoded": {...} } ] }`. Reuse Plan 1's `GoldenTrace` test helper to read them. **Golden-trace strategy = real pyatv capture** (revision-log E), not synthetic.
 
-- [ ] **Step 1: Activate pyatv from Plan 1 and confirm pairing still valid**
+- [ ] **Step 0: Install + PAIR pyatv with 客厅 (new prerequisite — revision-log E)**
+
+Plan 1 only paired *our* Kotlin client with 客厅; **pyatv itself was never paired** (real capture was deferred — see CLAUDE.md). pyatv needs its own Companion pairing before it can capture anything. Set the concrete env from CLAUDE.md and pair pyatv interactively (PIN shows on the TV). mDNS over Claude Bash needs the sandbox disabled (real multicast):
+
+```bash
+export ATV="客厅"; export ATV_HOST=192.168.7.134            # AppleTV14,1, port 49153, tvOS ≈715.2
+python3 -m venv .venv && . .venv/bin/activate && pip install -U pyatv
+atvremote scan 2>/dev/null                                  # note the printed Identifier for 客厅
+export ATV_ID="<identifier printed for 客厅>"               # used verbatim in every atvremote line below
+atvremote --id "$ATV_ID" --protocol companion pair          # type the PIN shown on 客厅; stores creds in ~/.pyatv.conf
+```
+(If scan finds nothing under Claude Bash, disable the sandbox for this step; optionally `export ATVREMOTE_MDNS_ADDR=192.168.7.131`.)
+
+- [ ] **Step 1: Confirm the pyatv↔客厅 Companion pairing is live**
 
 ```bash
 . .venv/bin/activate
-atvremote --id <ATV_ID> --protocol companion --debug playing 2>/dev/null | head -1
+atvremote --id "$ATV_ID" --protocol companion --debug playing 2>/dev/null | head -1   # no auth error ⇒ paired
 ```
+(Every `atvremote --id <ATV_ID> …` line below uses this exported `$ATV_ID` for the real 客厅 — there is no placeholder device.)
 
 - [ ] **Step 2: Capture a swipe (touch event stream)**
 
@@ -731,6 +769,10 @@ git commit -m "test(goldentrace): swipe structure conforms to pyatv touch-swipe 
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/HidClickTest.kt`
 
 pyatv wire facts: HidCommand `Select=6`, `Sleep=12`, `Wake=13`. `click`: SingleTap/DoubleTap = press(`_hidC` `{_hBtS:1,_hidC:6}`) + ~20ms + release(`{_hBtS:2,_hidC:6}`), repeated 1× (SingleTap) or 2× (DoubleTap), then a touch `_hidT` with phase `Click(5)`. Hold = press, ~1s, release (no trailing Click touch).
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn 'HidCommand\|_hidC' pyatv/protocols/companion/` to pin the file, read it, and confirm `Select=6`/`Sleep=12`/`Wake=13` and the press/release+Click-touch sequencing against pyatv (this is also the C1 ChaCha-nonce-adjacent area — see CLAUDE.md C1). pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -922,6 +964,10 @@ git commit -m "test(goldentrace): select click conforms to pyatv hid-click fixtu
 
 pyatv wire facts: list = command `FetchLaunchableApplicationsEvent` content `{}`, response `_c` is a `bundleId → name` map. Launch = command `_launchApp` content `{ "_bundleID": value }`, or `{ "_urlS": value }` when value looks like a URL/scheme (contains `://` or matches `^[a-zA-Z][a-zA-Z0-9+.-]*:`).
 
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn 'FetchLaunchableApplicationsEvent\|_launchApp\|_urlS' pyatv/protocols/companion/` to pin the file, read it, and confirm the list command name, the response shape (bundleId→name map), and the `_bundleID` vs `_urlS` selection rule against pyatv. pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
+
 - [ ] **Step 1: Write the failing test**
 
 ```kotlin
@@ -1089,6 +1135,10 @@ git commit -m "test(goldentrace): app list/launch conform to pyatv fixtures"
 
 pyatv wire facts: there is no dedicated power command. `power(true)` = HID `_hidC` `{_hBtS:2,_hidC:13}` (Wake=13). `power(false)` = `_hidC` `{_hBtS:2,_hidC:12}` (Sleep=12). Status = command `FetchAttentionState`, response `_c` `SystemStatus` int: `Asleep=0x01 → Off`; `Screensaver=0x02 / Awake=0x03 / Idle=0x04 → On`; `Unknown=0x00 → Unknown`. Subscribe events `SystemStatus`, `TVSystemStatus`.
 
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn 'FetchAttentionState\|SystemStatus\|HidCommand' pyatv/protocols/companion/` to pin the file, read it, and confirm the Wake=13/Sleep=12 HID mapping and the `SystemStatus` int → power-state mapping against pyatv. pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
+
 - [ ] **Step 1: Write the failing test**
 
 ```kotlin
@@ -1207,6 +1257,10 @@ git commit -m "feat(session): PowerController wake/sleep + FetchAttentionState s
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/MediaControllerTest.kt`
 
 pyatv wire facts: media = command `_mcc` content `{ "_mcc": MediaControlCommand.value, ...args }`. MediaControlCommand `Play=1, Pause=2, NextTrack=3, PreviousTrack=4` (`GetVolume=5/SetVolume=6` not used by v1). `MediaCommand` enum values already map 1:1. Volume up/down stays on Plan 1 `button()` HID `VolumeUp=8`/`VolumeDown=9` — `media()` is only Play/Pause/track.
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn 'MediaControlCommand\|_mcc' pyatv/protocols/companion/` to pin the file, read it, and confirm `_mcc` content shape + `Play=1/Pause=2/NextTrack=3/PreviousTrack=4` against pyatv. pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1528,14 +1582,18 @@ git commit -m "feat(session): minimal Apple bplist00 reader/writer for keyed arc
 
 The keyed-archive reader (`pyatv/protocols/companion/keyed_archiver.py`) and the RTI payload builders (`plist_payloads.py`) were **not read** during planning, so their exact object graph is device/source-dependent. This task captures the authority and ports `keyed_archiver.py` (NSKeyedArchiver/NSKeyedUnarchiver `$objects`/`$top`/`CF$UID` graph traversal) validated against the captured blob. RTI payload builders are Task 15.
 
+- [ ] **Step 0: pyatv pairing + source diff (MANDATORY — revision-log D & E)**
+
+Requires the **pyatv↔客厅 Companion pairing from Task 5 Step 0** (`$ATV_ID`, `.venv`, concrete env) — pyatv was never paired by Plan 1. Then read the **exact** pyatv port targets line-by-line before implementing Step 4: `raw.githubusercontent.com/postlund/pyatv/master/pyatv/protocols/companion/keyed_archiver.py` (and note `plist_payloads.py` for Task 15). The captured blob (Step 1) is the ultimate authority — on any disagreement pyatv/real bytes win; correct our code AND the fixture AND `docs/PROTOCOL.md` and record the verified `$objects` nesting path there.
+
 - [ ] **Step 1 (capture): record the real `_tiD` blob and a `text_set` exchange**
 
 ```bash
-. .venv/bin/activate
-# Put a text field on screen on the Apple TV (e.g. open search), then:
-atvremote --id <ATV_ID> --protocol companion --debug text_set=HelloWorld 2>tiset.log
+. .venv/bin/activate                                        # $ATV_ID exported in Task 5 Step 0 (real 客厅)
+# Put a text field on screen on 客厅 (e.g. open search), then:
+atvremote --id "$ATV_ID" --protocol companion --debug text_set=HelloWorld 2>tiset.log
 # Also capture a fresh _tiStart response while the field is focused:
-atvremote --id <ATV_ID> --protocol companion --debug text_get 2>tiget.log
+atvremote --id "$ATV_ID" --protocol companion --debug text_get 2>tiget.log
 ```
 From `tiget.log` extract the `_tiStart` response frame; its `_c["_tiD"]` is an NSKeyedArchiver binary-plist blob. Save the raw `_tiD` bytes (hex) plus pyatv's decoded interpretation (the string it printed for `text_get`) into `keyed-archiver-tiD.json` as: `{ "tiD_hex": "...", "expected_text": "<whatever was in the field>", "session_uuid": "<if printed>" }`. From `tiset.log` record the outbound `_tiC` event frame: `{ "out_tiC_hex": "...", "decoded": { "_tiV": 1, "_tiD": "<hex>" }, "text": "HelloWorld" }` into `text-set.json`.
 
@@ -1669,6 +1727,10 @@ git commit -m "feat(rti): KeyedArchiver graph resolver validated vs real _tiD bl
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/rti/RtiPayloadsGoldenTest.kt`
 
 Port `pyatv/protocols/companion/plist_payloads.py` (NOT read during planning — captured `text-set.json` from Task 14 is the authority). RTI: text get reads `_tiStart` response `_c["_tiD"]` via `KeyedArchiver` (Task 14). Set/append/clear send event `_tiC` content `{ "_tiV":1, "_tiD": <RTI binary-plist payload> }`. `text_set` = clear + input; `text_clear` = clear; `text_append` = input.
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the **exact** pyatv `pyatv/protocols/companion/plist_payloads.py` (the port target — `raw.githubusercontent.com/postlund/pyatv/master/pyatv/protocols/companion/plist_payloads.py`) line-by-line before porting; cross-check the NSKeyedArchiver object graph it builds against the **captured `text-set.json` from Task 14** (the captured real bytes are the ultimate authority — pyatv wins over any guess; correct code AND the fixture and `docs/PROTOCOL.md` on disagreement).
 
 - [ ] **Step 1: Write the failing test** (golden: our `_tiC` `_tiD` payload, decoded, equals pyatv's captured payload decoded)
 
@@ -1814,6 +1876,10 @@ git commit -m "feat(rti): RtiPayloads text input/clear builders vs pyatv text-se
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/session/KeyboardControllerTest.kt`
 
 pyatv wire facts: session commands `_tiStart`/`_tiStop`. text_get = `_tiStart` exchange → response `_c["_tiD"]` → `KeyedArchiver` → `documentState→docSt→contextBeforeInput`. Set/append/clear = event `_tiC` content `{ "_tiV":1, "_tiD": <RtiPayloads bytes> }`. text_set = clear then input; text_clear = clear; text_append = input. Focus = `_tiD` present in `_tiStarted`/`_tiStopped`/`_tiStart` event ⇒ `Focused`, absent ⇒ `Unfocused`.
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn '_tiStart\|_tiC\|_tiStarted\|_tiStopped' pyatv/protocols/companion/` to pin the file(s), read them, and confirm the `_tiStart`/`_tiStop`/`_tiC` flow and the focus-derivation (`_tiD` presence) against pyatv. This controller depends on `SessionChannel` (revision-log A) for the inbound `events` stream. pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1988,6 +2054,10 @@ git commit -m "feat(session): KeyboardController text get/set/clear/append + foc
 
 pyatv wire facts: subscribe `sendEvent("_interest", {"_regEvents":[name]})`, unsubscribe `{"_deregEvents":[name]}`. Inbound events are OPACK `_t==1` with `_i`/`_c` — surfaced by Plan 1's `CompanionProtocol.events`. Power subscribes `SystemStatus`, `TVSystemStatus`; handshake subscribes `_iMC`. The active subscription set must be restorable after reconnect (Task 18).
 
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log D / CLAUDE.md protocol-debugging rule)**
+
+Read the exact pyatv source first: `grep -rn '_interest\|_regEvents\|_deregEvents' pyatv/protocols/companion/` to pin the file, read it, and confirm the `_interest` register/deregister event shape against pyatv. This helper depends on `SessionChannel` (revision-log A) for inbound `events`; `restore()` is consumed by Task 18's reconnect supervisor (revision-log C). pyatv wins on any disagreement (fix code AND fixture); update the "pyatv wire facts" line + `docs/PROTOCOL.md` if reality differs.
+
 - [ ] **Step 1: Write the failing test**
 
 ```kotlin
@@ -2097,7 +2167,11 @@ git commit -m "feat(session): EventSubscriptions reg/dereg + restorable active s
 - Modify: `protocol/src/main/kotlin/dev/atvremote/protocol/session/CompanionSessionImpl.kt`
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/connection/ResilientSessionTest.kt`
 
-Spec §7 + brief: on socket drop, exponential-backoff reconnect → re-run `PairVerify` + `SessionHandshake` (Plan 1) → restore subscriptions (Task 17). Expose `connectionState`. During `Reconnecting`: **drop** touch events, **briefly queue** button/click, **fail** keyboard/app/power/media calls with `CompanionUnavailableException`. `ResilientSession` is itself a `CompanionSession` (decorator) so `AppleTvRemote.connect` returns it transparently.
+Spec §7 + brief: on socket drop, exponential-backoff reconnect → re-run `PairVerify` + `SessionHandshake` (Plan 1) → restore subscriptions (Plan 2 Task 17). Expose `connectionState`. During `Reconnecting`: **drop** touch events, **briefly queue** button/click, **fail** keyboard/app/power/media calls with `CompanionUnavailableException`. `ResilientSession` is itself a `CompanionSession` (decorator) so `AppleTvRemote.connect` returns it transparently.
+
+- [ ] **Step 0: pyatv source diff (MANDATORY — revision-log C/D / CLAUDE.md protocol-debugging rule)**
+
+Before writing the reconnect loop, re-read the existing `RemoteConnect.connect` body in `RemoteImpl.kt` AND the exact pyatv source it was ported from (`postlund/pyatv` → `pyatv/protocols/companion/connection.py` + `auth.py` `verify_credentials`/`exchange_auth`). The reconnect loop **must replay `RemoteConnect.connect`'s verified sequence step-for-step** (C3 await-2nd-`PV_Next`-before-`enableEncryption`, C5 verbatim clientId, C6 `sid`) — re-deriving it from memory will re-introduce the C1/C3/C5/C6 bugs Task 17 fixed. pyatv wins on any disagreement.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2140,7 +2214,7 @@ class ResilientSessionTest {
     @Test fun touchDroppedAndKeyboardFailsWhileReconnecting() = runTest {
         val fake = Fake()
         val rs = ResilientSession(fake)
-        fake.st.value = ConnectionState.Reconnecting
+        rs.setState(ConnectionState.Reconnecting)           // supervisor drives RS state (NOT the delegate's)
         rs.touch(1, 1, TouchPhase.Press)                    // dropped silently
         assertEquals(0, fake.touches)
         assertEquals(ConnectionState.Reconnecting, rs.connectionState.value)
@@ -2153,11 +2227,11 @@ class ResilientSessionTest {
     @Test fun buttonQueuedThenFlushedOnReconnect() = runTest {
         val fake = Fake()
         val rs = ResilientSession(fake)
-        fake.st.value = ConnectionState.Reconnecting
+        rs.setState(ConnectionState.Reconnecting)           // supervisor drives RS state
         rs.button(RemoteButton.Menu, true)                  // queued, not yet delivered
         assertEquals(0, fake.buttons)
-        fake.st.value = ConnectionState.Connected
-        rs.onReconnected()                                  // flush queue
+        rs.onReconnected()                                  // flips RS state→Connected + flushes queue
+        assertEquals(ConnectionState.Connected, rs.connectionState.value)
         assertEquals(1, fake.buttons)
     }
 
@@ -2174,6 +2248,8 @@ class ResilientSessionTest {
 ```
 
 (Remove the bogus `keyboardFocusUnused` member when writing the real test — it is shown only to flag that the Fake must implement every `CompanionSession` member; the actual Fake implements exactly the interface. Keep the Fake minimal and correct.)
+
+**State model (do not reintroduce the "mirror the delegate" confusion):** `ResilientSession` is the **authority** for `connectionState` — it owns `_state` and the only mutators are `setState()` / `onReconnected()`, called by the `RemoteConnect.connect` supervisor. It deliberately does **not** mirror the delegate's `connectionState`: a standalone `CompanionSessionImpl` always reports `Connected` (Task 19), so the wrapped delegate's flow carries no reconnection signal. Tests therefore drive `rs.setState(...)`, never `fake.st`. (`Fake.st` exists only because `CompanionSession` requires a `connectionState` member; it stays constant.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -2193,23 +2269,38 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Decorator over a live CompanionSession implementing spec §7 resilience policy:
- *  - connectionState exposed (mirrors the delegate, overridable by the supervisor).
+ *  - connectionState is OWNED here (authority); mutated only via setState()/
+ *    onReconnected() from the supervisor. It does NOT mirror the delegate
+ *    (a standalone CompanionSessionImpl is always Connected — Task 19).
  *  - while Reconnecting/Disconnected:
  *      touch()  -> dropped silently (gesture stream is disposable)
  *      button()/click() -> briefly queued, flushed on reconnect
  *      keyboard/app/power/media -> throw CompanionUnavailableException
  *  - onReconnected() replays the queued buttons/clicks in order.
  * The actual socket-drop detection + backoff + pair-verify + handshake + subscription
- * restore is driven by RemoteImpl, which calls setState()/onReconnected() on this object.
+ * restore is driven by RemoteConnect.connect's supervisor, which calls
+ * setState()/swapDelegate()/onReconnected() on this object (revision-log B/C).
  */
-class ResilientSession(private val delegate: CompanionSession) : CompanionSession {
+class ResilientSession(initial: CompanionSession) : CompanionSession {
+    // Swappable: the supervisor replaces the live CompanionSessionImpl after each
+    // successful reconnect (new conn/proto/sid). @Volatile so the swap is visible
+    // across the supervisor and caller threads.
+    @Volatile private var delegate: CompanionSession = initial
     private val _state = MutableStateFlow(ConnectionState.Connected)
     override val connectionState: StateFlow<ConnectionState> = _state
     private val pending = ConcurrentLinkedQueue<suspend () -> Unit>()
 
     fun setState(s: ConnectionState) { _state.value = s }
 
-    suspend fun onReconnected() {
+    /** Supervisor: install the freshly-reconnected session before flushing the queue. */
+    fun swapDelegate(next: CompanionSession) { delegate = next }
+
+    /** [next] non-null on real reconnect (supervisor); null in unit tests that don't swap.
+     *  NOTE: `keyboardFocus` is a `get()` over the current delegate, so callers should
+     *  read `session.keyboardFocus` per-use rather than caching the StateFlow across a
+     *  reconnect (documented decorator limitation; acceptable for v1). */
+    suspend fun onReconnected(next: CompanionSession? = null) {
+        if (next != null) delegate = next
         _state.value = ConnectionState.Connected
         while (true) {
             val op = pending.poll() ?: break
@@ -2253,7 +2344,17 @@ class ResilientSession(private val delegate: CompanionSession) : CompanionSessio
 }
 ```
 
-In `RemoteImpl.kt`, change `connect()` to: build the `CompanionConnection` + `CompanionProtocol` + `CompanionSessionImpl` as Plan 1 did, wrap it in `ResilientSession`, then launch a supervisor coroutine that observes the connection (Plan 1's `CompanionConnection` exposes the socket lifecycle via its frame flow completing/erroring): on drop, `resilient.setState(Reconnecting)`, loop with exponential backoff `delay(minOf(30_000L, 500L * (1L shl attempt)))` (cap 30s) attempting: reconnect TCP → `PairVerify` (Plan 1) → `enableEncryption` → `SessionHandshake` (Plan 1) → `companionSessionImpl.subscriptions.restore()` (Task 17); on success `resilient.onReconnected()`. If the credentials are rejected during pair-verify, set `Disconnected` and stop (spec §7 credential-invalidation case — surfaced to the app, not retried forever). Return the `ResilientSession`.
+In `RemoteImpl.kt`, modify the `internal object RemoteConnect.connect(...)` (NOT a `RemoteImpl` class — see revision-log B) so that after building `CompanionConnection` + `CompanionProtocol` + `CompanionSessionImpl(proto, sid = handshake.sid, onClose = …)` (the existing Task-17 path), it wraps the impl in `ResilientSession`, launches a supervisor coroutine, and returns the `ResilientSession`.
+
+**Per Step 0's pyatv diff:** the reconnect loop **must replay `RemoteConnect.connect`'s verified sequence step-for-step** — re-deriving it from memory will re-introduce the C1/C3/C5/C6 bugs Task 17 fixed.
+
+Supervisor behavior:
+
+- **Drop detection keys off real socket close, not frame-flow completion.** Task 17's `CompanionConnection.readLoop` now *resyncs past a bad/undecryptable frame and keeps going* (regression test `CompanionConnectionTest.readLoopSkipsUndecryptableFrameAndContinues`), so a transient decode failure no longer ends `conn.frames()`. Detect a true drop via the socket lifecycle (the read loop terminating on `EOF`/`SocketException`, i.e. `conn` actually closed), not via the flow merely completing.
+- On drop: `resilient.setState(Reconnecting)`, then loop with exponential backoff `delay(minOf(30_000L, 500L * (1L shl attempt)))` (cap 30s), each attempt rebuilding the **exact** verified path: new `CompanionConnection` + `conn.connect()` → `PairVerify` M1 (`PV_Start`) → consume raw M2 (`PV_Next`, bounded 5s) → M3 (`PV_Next`) → **C3: await the 2nd `PV_Next` (`conn.frames().filter{ft==PV_Next}.drop(1).first()`, replay-buffer caveat) BEFORE `enableEncryption`** → `enableEncryption(outKey,inKey)` → **C5: `SessionHandshake` with `String(credentials.clientId, UTF_8)` verbatim as deviceId/clientId** → on success rebuild `CompanionSessionImpl(newProto, sid = newHandshake.sid /* C6 */, onClose=…)`, swap it behind the `ResilientSession` delegate, re-issue `EventSubscriptions.restore()` (Plan 2 **Task 17**, not Plan 1) for the previously-active `_interest` set, then `resilient.onReconnected()`.
+- If pair-verify is rejected (credentials invalidated): `resilient.setState(Disconnected)` and stop the loop (spec §7 credential-invalidation — surfaced to the app, not retried forever).
+
+(Note: `ResilientSession` decorates a *swappable* delegate so the supervisor can replace the live `CompanionSessionImpl` on each successful reconnect; `connectionState`/queued-button replay are owned by `ResilientSession` as shown above.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -2341,7 +2442,17 @@ git commit -m "test(session): CompanionSession flows wiring + full module regres
 - Modify: `docs/PROTOCOL.md`
 - Test: manual (documented expected output)
 
-Extend Plan 1's `SmokeCli` (it already does `discover`/`pair`/`menu`) with Plan-2 subcommands so every new feature is exercised against the real tvOS 18 device end-to-end.
+Extend Plan 1's `SmokeCli` (it already does `discover`/`pair`/`menu`) with Plan-2 subcommands so every new feature is exercised against the real **客厅** device end-to-end.
+
+**Build/run convention (CLAUDE.md — no JDK on PATH; `:trace-tools:run` is NOT used):**
+```bash
+export JAVA_HOME=/Library/Java/JavaVirtualMachines/temurin-17.jdk/Contents/Home
+$JAVA_HOME/bin/java -version || true
+JAVA_HOME=$JAVA_HOME ./gradlew :trace-tools:installDist
+TT=./trace-tools/build/install/trace-tools/bin/trace-tools
+DEV='客厅@192.168.7.134:49153'        # real device target form the Plan-1 SmokeCli accepts (no <ATV_ID> placeholder)
+```
+(mDNS via Claude Bash needs the sandbox disabled; optional `export ATVREMOTE_MDNS_ADDR=192.168.7.131`. The CLI reuses `CredentialStore`, so `pair` need only be done once.)
 
 - [ ] **Step 1: Add subcommands**
 
@@ -2357,22 +2468,22 @@ Also print `session.connectionState.value` and `session.keyboardFocus.value` aft
 
 - [ ] **Step 2: Pair/connect prerequisite**
 
-Run: `./gradlew :trace-tools:run --args "menu <ATV_ID>"`
-Expected: still prints `OK` (Plan 1 regression check — Plan 2 wiring did not break connect/HID).
+Run: `$TT menu "$DEV"`
+Expected: still prints `OK` + 客厅 reacts (Plan 1 regression check — Plan 2 wiring did not break connect/HID; this is the C1–C6 path).
 
-- [ ] **Step 3: Exercise the full command set against the real device**
+- [ ] **Step 3: Exercise the full command set against the real 客厅 device**
 
 ```bash
-./gradlew :trace-tools:run --args "swipe <ATV_ID> 0 500 1000 500"
-./gradlew :trace-tools:run --args "click <ATV_ID> single"
-./gradlew :trace-tools:run --args "apps <ATV_ID>"
-./gradlew :trace-tools:run --args "launch <ATV_ID> com.apple.TVSettings"
-./gradlew :trace-tools:run --args "power <ATV_ID> status"
-./gradlew :trace-tools:run --args "media <ATV_ID> play"
+$TT swipe  "$DEV" 0 500 1000 500
+$TT click  "$DEV" single
+$TT apps   "$DEV"
+$TT launch "$DEV" com.apple.TVSettings
+$TT power  "$DEV" status
+$TT media  "$DEV" play
 ```
-Expected: focus visibly moves on the swipe; selection happens on click; `apps` prints the installed list; Settings launches; `power status` prints `On`; `media play` toggles playback. Open a search field on the TV, then:
+Expected: focus visibly moves on the swipe; selection happens on click; `apps` prints the installed list; Settings launches; `power status` prints `On`; `media play` toggles playback. Open a search field on 客厅, then:
 ```bash
-./gradlew :trace-tools:run --args "text <ATV_ID> HelloWorld"
+$TT text "$DEV" HelloWorld
 ```
 Expected: `HelloWorld` appears in the TV's text field and the CLI prints it back from `textGet()`; `keyboardFocus` prints `Focused`. Record the verified end-to-end results (and any tvOS-version quirks) in `docs/PROTOCOL.md`.
 
@@ -2403,21 +2514,23 @@ Spec §2 v1 features and §7 resilience → Task:
 | §2 电源开关/睡眠 | T11 (PowerController wake/sleep + FetchAttentionState status), T12 (power golden conformance) |
 | §2 媒体控制 (play/pause/track) | T12 (MediaController `_mcc`) |
 | 事件订阅/分发 (`_interest`) | T17 (EventSubscriptions reg/dereg/restore); inbound via Plan 1 `CompanionProtocol.events` |
-| §7 掉线指数退避自动重连 + pair-verify + 恢复订阅 | T18 (ResilientSession + RemoteImpl supervisor: backoff, PairVerify+SessionHandshake re-run, `subscriptions.restore()`) |
+| §7 掉线指数退避自动重连 + pair-verify + 恢复订阅 | T18 (ResilientSession + `RemoteConnect.connect` supervisor replaying the C3/C5/C6 verified sequence: backoff, PairVerify+`enableEncryption`+SessionHandshake re-run, `EventSubscriptions.restore()`) |
 | §7 重连期间滑动丢弃、按钮短暂入队 | T18 (touch dropped; button/click queued ≤32, flushed on `onReconnected`); keyboard/app/power/media throw `CompanionUnavailableException` |
 | §7 凭证失效 → 不无限重试 | T18 (pair-verify rejection → `Disconnected`, stop) |
 | `connectionState` / `keyboardFocus` StateFlows | T16 (keyboardFocus), T18 (connectionState via ResilientSession), T19 (wiring + flows integration) |
-| Golden-trace methodology (no fabricated wire bytes) | T5 (capture touch/click/apps/power/media), T14 (capture `_tiD`/`text_set`), T6/T8/T10/T12 (conformance), T15 (RTI vs `text-set.json`), T20 (live device) |
+| Golden-trace methodology — **real pyatv capture** (revision-log E; no fabricated/synthetic wire bytes) | T5 (pair pyatv with 客厅 + capture touch/click/apps/power/media), T14 (capture real `_tiD`/`text_set`), T6/T8/T10/T12 (conformance), T15 (RTI vs `text-set.json`), T20 (live 客厅) |
 
 Out of scope by spec §2 YAGNI and correctly excluded: Now Playing/cover art (AirPlay 2 MRP), Siri/voice, Wake-on-LAN fallback (UI/app concern — `power(true)` HID Wake is the protocol-layer obligation and is delivered in T11; WoL is Plan 3/app), Android Keystore/UI (Plan 3).
 
 ### 2. Placeholder scan
 
-No "TBD / TODO / handle errors / similar to Task N". Every code step contains the actual Kotlin/test code. The only deliberately-deferred bodies are the Task-1 temporary `NotImplementedError` override stubs, which exist solely to keep the module compiling between tasks and are each explicitly replaced (with real code shown) in Tasks 4, 7, 9, 11, 12, 16 and gated to zero remaining stubs by Task 19's wiring-completeness test. Device/wire-format-dependent surfaces (touch/click/apps/power/media frames, the `_tiD` keyed-archive graph, the RTI `_tiC` payload) are never fabricated: each has an explicit `atvremote --protocol companion --debug ...` capture task (T5, T14) producing a JSON fixture and a conformance test that asserts our decoded structure against the captured pyatv bytes (T6, T8, T10, T12, T15), with the fixture documented as the authority and `docs/PROTOCOL.md` updated when reality differs from the documented constants.
+No "TBD / TODO / handle errors / similar to Task N". Every code step contains the actual Kotlin/test code. The only deliberately-deferred bodies are the Task-1 temporary `NotImplementedError` override stubs, which exist solely to keep the module compiling between tasks and are each explicitly replaced (with real code shown) in Tasks 4, 7, 9, 11, 12, 16 and gated to zero remaining stubs by Task 19's wiring-completeness test. Device/wire-format-dependent surfaces (touch/click/apps/power/media frames, the `_tiD` keyed-archive graph, the RTI `_tiC` payload) are never fabricated: each has an explicit **real pyatv capture** task (T5, T14) — preceded by the now-explicit "install + pair pyatv with 客厅" precondition (revision-log E; Plan 1 never paired pyatv) and the mandatory pyatv-source Step 0 (revision-log D) — producing a JSON fixture and a conformance test that asserts our decoded structure against the captured pyatv bytes (T6, T8, T10, T12, T15), with the captured bytes as the authority (pyatv wins) and `docs/PROTOCOL.md` updated when reality differs from the documented constants. No `<ATV_ID>` placeholder remains: capture/CLI steps use the concrete CLAUDE.md env (`$ATV_ID` / `客厅@192.168.7.134:49153`, `JAVA_HOME` Temurin 17, `installDist`).
 
 ### 3. Type-consistency check
 
-LOCKED Plan 1 types referenced unchanged: `AppleTvDevice`, `HapCredentials`, `RemoteButton` (incl. `VolumeUp=8`/`VolumeDown=9`/`PlayPause=14`), `DeviceDiscovery`, `AppleTvRemote`, `PairingHandle`, plus internal `Opack`, `Tlv8`, `Curves`, `ChaCha`, `Hkdf`, `Frame`/`FrameType`, `CompanionConnection`, `CompanionProtocol`, `PairVerify`, `SessionHandshake`, `CompanionSessionImpl`, `GoldenTrace` (extended additively with `outDecoded()`/`inDecoded()`/`loadRaw()`/`getString()`/`path()` accessors — no redefinition).
+LOCKED Plan 1 types referenced unchanged: `AppleTvDevice`, `HapCredentials`, `RemoteButton` (incl. `VolumeUp=8`/`VolumeDown=9`/`PlayPause=14`), `DeviceDiscovery`, `AppleTvRemote`, `PairingHandle`, plus internal `Opack`, `Tlv8`, `Curves`, `ChaCha`, `Hkdf`, `Frame`/`FrameType`, `CompanionConnection`, `PairVerify`, `SessionHandshake`, `GoldenTrace` (extended additively with `outDecoded()`/`inDecoded()`/`loadRaw()`/`getString()`/`path()` accessors — no redefinition).
+
+Post-Task-17 types touched **additively only** (revision-log A/B): `CompanionProtocol` gains `: SessionChannel` + `override` on its existing `events` (no behavior change); `connection.CommandChannel` is reused as-is (NOT redeclared) and `SessionChannel : CommandChannel { val events }` is added beside it; `CompanionSessionImpl`'s real ctor `(channel: CommandChannel, sid: Long = 0L, onClose: suspend () -> Unit = {})` is preserved verbatim (only member overrides added); `RemoteConnect` (`internal object` in `RemoteImpl.kt`) is the connect/pair entry point that Task 18 wraps. Plan 1 doubles `RecordingProtocol`/`RecordingProtocol2`/`FakeConnection` are untouched.
 
 LOCKED Plan 2 additions to `Api.kt`, used with identical names/signatures in every task that touches them (T1 declares; T3–T19 consume):
 
@@ -2443,4 +2556,15 @@ LOCKED Plan 2 additions to `Api.kt`, used with identical names/signatures in eve
 - `CompanionSession.media(command: MediaCommand)` — T1, T12, T18, T19, T20
 - `val CompanionSession.connectionState: StateFlow<ConnectionState>` — T1, T18, T19, T20
 
-All signatures match the LOCKED API extension contract verbatim; `ResilientSession` (T18) implements `CompanionSession` so `AppleTvRemote.connect` (Plan 1 locked signature, unchanged) transparently returns the resilient decorator. New internal helper names are consistent across tasks: `CommandChannel`, `FakeProtocol`, `TouchTransport`, `HidCommands`, `AppsController`, `PowerController`, `MediaController`, `KeyboardController`, `EventSubscriptions`, `Plist`, `KeyedArchiver`, `RtiPayloads`, `ResilientSession`.
+All signatures match the LOCKED API extension contract verbatim; `ResilientSession` (T18) implements `CompanionSession` so `AppleTvRemote.connect` (Plan 1 locked signature, unchanged) transparently returns the resilient decorator. New internal helper names are consistent across tasks: `SessionChannel` (new; extends the reused Task-17 `CommandChannel`), `FakeProtocol`, `TouchTransport`, `HidCommands`, `AppsController`, `PowerController`, `MediaController`, `KeyboardController`, `EventSubscriptions`, `Plist`, `KeyedArchiver`, `RtiPayloads`, `ResilientSession`.
+
+### 4. Revision reconciliation (2026-05-16) — self-check
+
+This revision was applied for parity with the post-Task-17 repo. Re-scanned after editing:
+
+- **No stale symbols:** no remaining `RemoteImpl.connect` (now `RemoteConnect.connect`), no "create/declare `CommandChannel`" (now reuse + add `SessionChannel`), no `<ATV_ID>` capture without a defined `$ATV_ID`/`$DEV` (Task 5 Step 0 / Task 20 convention), no `:trace-tools:run` (now `installDist` + `$TT` per CLAUDE.md).
+- **Internal consistency:** Task 2's `SessionChannel` is consumed only by T16/T17 (which need `events`); command-only controllers take `CommandChannel`; `FakeProtocol : SessionChannel` satisfies both. `ResilientSession`'s swappable `@Volatile var delegate` + `swapDelegate`/`onReconnected(next)` matches the Task-18 supervisor prose. `CompanionSessionImpl` ctor is quoted identically in revision-log B, Task 1, Task 4, and §3.
+- **Task-18 state-authority gap resolved (2026-05-16):** the pre-existing `ResilientSessionTest` drove `fake.st.value` but `ResilientSession` owns `_state` (only `setState()`/`onReconnected()` mutate it; the delegate is deliberately not mirrored — standalone impl is always Connected per T19). Tests rewritten to drive `rs.setState(...)`; the misleading "mirrors the delegate" KDoc corrected; an explicit "State model" note added after the test so it isn't reintroduced.
+- **Scope unchanged:** task count/order/DAG unchanged (scope choice); Task 2 rewritten in place; all reconciliation is additive or a reference fix.
+- **pyatv-wins baked in:** every protocol task (T3,7,9,11,12,14,15,16,17,18) has a Step 0 naming the exact pyatv source to diff before code/fix, per CLAUDE.md.
+- **Capture is real:** golden-trace strategy = real pyatv capture; Tasks 5/14 carry the (previously missing) "pair pyatv with 客厅" precondition with concrete env.
