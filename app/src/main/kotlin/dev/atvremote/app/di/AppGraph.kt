@@ -2,6 +2,7 @@ package dev.atvremote.app.di
 
 import android.content.Context
 import dev.atvremote.app.conn.ConnectionManager
+import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.data.CredentialStore
 import dev.atvremote.app.haptics.Haptics
 
@@ -19,9 +20,13 @@ import dev.atvremote.app.haptics.Haptics
  * connect()/Service bind. Uses ConnectionManager's DEFAULT connector
  * (`SessionConnector { d,c -> AppleTvRemote.connect(d,c) }`) — there is no
  * `remote=`/`AppleTvRemote` ctor param.
+ *
+ * multicastLock (S2) is lazy so no WifiManager access at app-start; S5 acquires
+ * it only while the Devices screen is active.
  */
 class AppGraph(appContext: Context) {
     val credentialStore by lazy { CredentialStore(appContext) }
     val haptics = Haptics(appContext)
     val connectionManager by lazy { ConnectionManager(credentialStore = credentialStore) }
+    val multicastLock by lazy { MulticastLockHolder(appContext) }
 }
