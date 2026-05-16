@@ -36,10 +36,26 @@ atvremote --id "$ATV_ID" --protocol companion --debug playing 2>/dev/null | head
 ## Regression gate first (Task-17 + ResilientSession transparency)
 
 ```bash
-JAVA_HOME=$JAVA_HOME ./gradlew clean test      # expect 101 green, byte-identical goldens
+JAVA_HOME=$JAVA_HOME ./gradlew clean test      # expect 114 green, byte-identical goldens
 JAVA_HOME=$JAVA_HOME ./gradlew :trace-tools:installDist
-$TT scan ; $TT pair "$DEV" ; $TT menu "$DEV"   # OK + TV reacts ⇒ ResilientSession wrap is transparent when Connected
+$TT scan ; $TT pair "$DEV" ; $TT menu "$DEV"   # OK + TV reacts ⇒ ResilientSession wrap transparent when Connected
 ```
+
+## pyatv-conformance changes needing real-tvOS re-validation (2026-05-16)
+
+The whole-stack pyatv audit (see CLAUDE.md "Plan-2 whole-stack pyatv-conformance
+audit") corrected several layers; three touch Task-17-validated handshake/touch
+and are correct-by-construction vs pyatv but **unproven on real 客厅** — confirm
+during `pair→connect→menu` + commands here:
+- **`_systemInfo._i` is now a distinct random `rp_id`** (`os.urandom(6).hex()`
+  12-char hex), no longer the pairing `clientId`. Confirm tvOS still accepts the
+  handshake (connect succeeds, `menu` reacts).
+- **Touch `_ns` is now session-relative** to the connect-time `_touchStart`;
+  per-gesture `_touchStart`/`_touchStop` removed. Confirm `swipe`/`touch` move
+  focus correctly on the real device (T6/T20).
+- **`close()` now sends `_touchStop` after `_sessionStop`.** Confirm a clean
+  disconnect (no tvOS error; reconnect still works).
+Also exercised by the resilience end-to-end section below.
 
 ## Deferred tasks (do in order)
 

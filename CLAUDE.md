@@ -156,10 +156,51 @@ real `_tiD` capture (T14/15). The `connectionState` of a standalone
 `CompanionSessionImpl` is always `Connected`; the live value is owned by the
 wrapping `ResilientSession` (T19, deferred, is the zero-stubs/flows gate).
 
+### Plan-2 whole-stack pyatv-conformance audit (2026-05-16)
+
+Per owner directive ("compare ALL implemented protocol layers to pyatv; pyatv
+wins"), all layers were diffed line-by-line vs exact pyatv master via 7
+parallel read-only audits. Verdicts: **crypto (SRP/ChaCha/HKDF/Curves),
+PairSetup/PairVerify, SessionHandshake, FrameType/Connection/Protocol,
+discovery, TLV8 — CONFORMANT** (all HKDF salt/info strings, C1 two-nonce
+split, FrameType ints, RemoteButton↔HidCommand, pair TLV/wrappers exact).
+Genuine divergences found & fixed (each pyatv-verified, TDD, two-stage
+reviewed; commits `0f3e814`→`84a99aa`):
+- **OPACK decoder object-list**: containers AND empty string/data must be
+  excluded/included exactly per pyatv `_unpack` `add_to_object_list` (was
+  mis-resolving back-refs); tag `0x06` decoded as 8-byte LE int (was crash);
+  dict keys `.toString()` (was `ClassCastException`).
+- **`sendEvent` now adds `_x`** from the shared xid counter (pyatv `send_opack`
+  injects it on every frame incl. events).
+- **Touch model**: `_hidT._ns` is session-relative to the connect-time
+  `_touchStart` (base threaded `SessionHandshake`→`TouchTransport`); per-gesture
+  `_touchStart`/`_touchStop` removed (`swipe()` = `hid_event` loop, pyatv-exact).
+- **`close()` sends `_touchStop` after `_sessionStop`** (pyatv `disconnect()`
+  order).
+- **`_systemInfo._i`** is a distinct random `rp_id` (`os.urandom(6).hex()`
+  format), no longer conflated with the pairing `clientId` (`_idsID` stays
+  clientId, `_pubID` deviceId).
+
+**Two deliberate, owner-flagged NON-reversions** (literal pyatv parity would be
+worse — exceptions to "pyatv wins", documented for transparency):
+- **M6 accessory-signature verification**: we verify it; pyatv has
+  `# TODO: verify signature here` and skips. Matching pyatv = deleting a valid
+  security check with zero wire/interop effect — we stay stricter.
+- **discovery device id** = `name@ip:port` (not pyatv's stable `rpMRtID`):
+  intentional Plan-1 CLI simplification; literal parity needs a `CredentialStore`
+  key migration — a Plan-3 concern.
+
+**Device re-validation owed (touch model / `_touchStop`-close / `_systemInfo._i`
+modify Task-17-validated handshake/touch; correct-by-construction vs pyatv but
+unproven on real tvOS):** the deferred device session
+(`docs/PLAN-2-DEVICE-SESSION-RUNBOOK.md`) must re-confirm `pair→connect→menu` +
+touch/swipe/close on real 客厅.
+
 ## Resume checklist (next session)
-1. `git pull` (Plan-2 code-first is on `main` @ origin, `aee81a2`).
-2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **101
-   tests green**, `PairSetupGoldenTest` byte-identical.
+1. `git pull` (Plan-2 code-first + the whole-stack pyatv-conformance fixes are
+   committed per-task on `main`).
+2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **114
+   tests green**, `PairSetupGoldenTest`/`PairVerifyGoldenTest` byte-identical.
 3. Re-confirm real device: `scan` → `客厅 … AppleTV14,1 … true`; then
    `pair "客厅@192.168.7.134:49153"` (type the PIN shown on the TV) →
    `Paired`; then `menu "客厅@..."` → `OK` + TV reacts (this also regression-
