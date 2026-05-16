@@ -1,0 +1,19 @@
+{
+  "mode": "realDevice",
+  "kind": "apps-list",
+  "note": "REAL-DEVICE capture via pyatv 0.17.0 ↔ 客厅 / AppleTV14,1 (Apple TV 4K gen3) / 192.168.7.134:49153 / tvOS 26.5 on 2026-05-16. mode=realDevice. Asserts frame structure + phase/identifier ordering (not raw _ns/_x which are non-deterministic). REQUEST-ONLY: on tvOS 26.5 FetchLaunchableApplicationsEvent is UNANSWERED (times out, no reply) — known upstream Apple tvOS-26 regression (pyatv #2823 / HA #168210); pyatv itself fails identically. No app-map response is capturable on this firmware. T10 asserts the request shape only.",
+  "fixedInputs": {},
+  "steps": [
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f696046657463684c61756e636861626c654170706c69636174696f6e734576656e74425f740a425f63e0425f7831cdb8",
+      "decoded": {
+        "_i": "FetchLaunchableApplicationsEvent",
+        "_t": 2,
+        "_c": {},
+        "_x": 47309
+      }
+    }
+  ]
+}

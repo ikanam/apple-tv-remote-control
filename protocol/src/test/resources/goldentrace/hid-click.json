@@ -1,0 +1,58 @@
+{
+  "mode": "realDevice",
+  "kind": "hid-click",
+  "note": "REAL-DEVICE capture via pyatv 0.17.0 ↔ 客厅 / AppleTV14,1 (Apple TV 4K gen3) / 192.168.7.134:49153 / tvOS 26.5 on 2026-05-16. mode=realDevice. Asserts frame structure + phase/identifier ordering (not raw _ns/_x which are non-deterministic). pyatv `select` = _hidC button down{_hBtS:1,_hidC:6} + up{_hBtS:2,_hidC:6}, each ack _rT:0. (Note: _hidC 6 = Select; pyatv button-press path, NOT the touch-click _hidT path.)",
+  "fixedInputs": {},
+  "steps": [
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f69455f68696443425f740a425f63e2455f6842745309a10e425f78310ee0",
+      "decoded": {
+        "_i": "_hidC",
+        "_t": 2,
+        "_c": {
+          "_hBtS": 1,
+          "_hidC": 6
+        },
+        "_x": 57358
+      }
+    },
+    {
+      "dir": "in",
+      "frameType": 8,
+      "opackHex": "e4425f78310ee0435f725408425f63e0425f740b",
+      "decoded": {
+        "_x": 57358,
+        "_rT": 0,
+        "_c": {},
+        "_t": 3
+      }
+    },
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f69455f68696443425f740a425f63e2455f684274530aa10e425f78310fe0",
+      "decoded": {
+        "_i": "_hidC",
+        "_t": 2,
+        "_c": {
+          "_hBtS": 2,
+          "_hidC": 6
+        },
+        "_x": 57359
+      }
+    },
+    {
+      "dir": "in",
+      "frameType": 8,
+      "opackHex": "e4425f78310fe0435f725408425f63e0425f740b",
+      "decoded": {
+        "_x": 57359,
+        "_rT": 0,
+        "_c": {},
+        "_t": 3
+      }
+    }
+  ]
+}

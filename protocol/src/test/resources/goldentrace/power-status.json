@@ -1,0 +1,19 @@
+{
+  "mode": "realDevice",
+  "kind": "power-status",
+  "note": "REAL-DEVICE capture via pyatv 0.17.0 ↔ 客厅 / AppleTV14,1 (Apple TV 4K gen3) / 192.168.7.134:49153 / tvOS 26.5 on 2026-05-16. mode=realDevice. Asserts frame structure + phase/identifier ordering (not raw _ns/_x which are non-deterministic). REQUEST-ONLY: on tvOS 26.5 FetchAttentionState is UNANSWERED (5 s timeout, no reply) — known upstream Apple tvOS-26 regression (pyatv #2823 / HA #168210); pyatv itself disables power_state. T12 asserts the request shape only; the code-first _c={state:int}/0x01-0x04 mapping is unverifiable on this firmware.",
+  "fixedInputs": {},
+  "steps": [
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f69534665746368417474656e74696f6e5374617465425f740a425f63e0425f783178bf",
+      "decoded": {
+        "_i": "FetchAttentionState",
+        "_t": 2,
+        "_c": {},
+        "_x": 49016
+      }
+    }
+  ]
+}

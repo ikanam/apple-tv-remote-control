@@ -1,0 +1,32 @@
+{
+  "mode": "realDevice",
+  "kind": "launch-app",
+  "note": "REAL-DEVICE capture via pyatv 0.17.0 ↔ 客厅 / AppleTV14,1 (Apple TV 4K gen3) / 192.168.7.134:49153 / tvOS 26.5 on 2026-05-16. mode=realDevice. Asserts frame structure + phase/identifier ordering (not raw _ns/_x which are non-deterministic). _launchApp{_bundleID:'com.apple.TVSettings'} — Settings opened on the real device (worked on tvOS 26.5).",
+  "fixedInputs": {},
+  "steps": [
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f694a5f6c61756e6368417070425f740a425f63e1495f62756e646c65494454636f6d2e6170706c652e545653657474696e6773425f78314514",
+      "decoded": {
+        "_i": "_launchApp",
+        "_t": 2,
+        "_c": {
+          "_bundleID": "com.apple.TVSettings"
+        },
+        "_x": 5189
+      }
+    },
+    {
+      "dir": "in",
+      "frameType": 8,
+      "opackHex": "e4425f78314514435f7254316d04425f63e0425f740b",
+      "decoded": {
+        "_x": 5189,
+        "_rT": 1133,
+        "_c": {},
+        "_t": 3
+      }
+    }
+  ]
+}

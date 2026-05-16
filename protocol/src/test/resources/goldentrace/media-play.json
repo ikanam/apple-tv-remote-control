@@ -1,0 +1,32 @@
+{
+  "mode": "realDevice",
+  "kind": "media-play",
+  "note": "REAL-DEVICE capture via pyatv 0.17.0 ↔ 客厅 / AppleTV14,1 (Apple TV 4K gen3) / 192.168.7.134:49153 / tvOS 26.5 on 2026-05-16. mode=realDevice. Asserts frame structure + phase/identifier ordering (not raw _ns/_x which are non-deterministic). _mcc{_mcc:1} (play) — ack _rT:0 on tvOS 26.5.",
+  "fixedInputs": {},
+  "steps": [
+    {
+      "dir": "out",
+      "frameType": 8,
+      "opackHex": "e4425f69445f6d6363425f740a425f63e1a109425f78316652",
+      "decoded": {
+        "_i": "_mcc",
+        "_t": 2,
+        "_c": {
+          "_mcc": 1
+        },
+        "_x": 21094
+      }
+    },
+    {
+      "dir": "in",
+      "frameType": 8,
+      "opackHex": "e4425f78316652435f725408425f63e0425f740b",
+      "decoded": {
+        "_x": 21094,
+        "_rT": 0,
+        "_c": {},
+        "_t": 3
+      }
+    }
+  ]
+}

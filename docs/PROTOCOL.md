@@ -117,3 +117,57 @@ then timeout exceptions). Corrected to `ch.sendEvent("_hidT", ...)` in both file
 Plan-2 Task 7 code block also specified `"_ns" to 0L` (constant zero). pyatv uses
 `time.time_ns() - self._base_timestamp` (live monotonic ns). Corrected to `nanoClock()`
 (injected live clock) in `HidCommands.clickTouch()`.
+
+---
+
+## Real tvOS 26.5 device-session findings (2026-05-16)
+
+Six golden traces were captured from the real Apple TV (**客厅 / AppleTV14,1 /
+192.168.7.134:49153 / tvOS 26.5**) via pyatv 0.17.0 and fixed into
+`protocol/src/test/resources/goldentrace/*` (`mode == "realDevice"`). The
+conformance suite `CommandsGoldenTest` (runbook T6/T8/T10/T12) drives our
+production transports through `FakeProtocol` and asserts the emitted frame
+**structure / identifier / phase ordering** against these captures (never the
+non-deterministic `_ns`/`_x`).
+
+**Validated against the real device (frame structure confirmed):**
+
+- **touch-swipe** — `_touchStart`(_t2) → 31×`_hidT`(_t1, fire-and-forget:
+  Press `_tPh=1` → 29×Hold `_tPh=3` → Release `_tPh=4`) → `_touchStop`(_t2).
+  Confirms the pyatv-wins touch model on real tvOS 26.5: `_hidT` is a
+  fire-and-forget `sendEvent` and `_ns` is session-relative; `_touchStart`/
+  `_touchStop` are session-lifecycle frames sent once by connect()/close(),
+  **not** per-gesture by `swipe()`.
+- **hid-click (Select BUTTON)** — captured from pyatv `atvremote select` →
+  `RemoteControl.select` → `_press_button(HidCommand.Select)`: exactly two
+  `_hidC` frames, down `{_hBtS:1,_hidC:6}` then up `{_hBtS:2,_hidC:6}`, each
+  acked `_rT:0`. This is the **button** path. It is a *different operation*
+  from our `HidCommands.click(InputAction)`, which faithfully ports pyatv
+  `CompanionAPI.click()` — a **touch** path emitting `_hidC` down/up **plus a
+  trailing `_hidT` Click** (`_cx:1000,_cy:1000,_tPh:5`). `select(button)` =
+  2×`_hidC`; `click(touch)` = `_hidC` + trailing `_hidT`. Both are correct;
+  `click()`'s trailing `_hidT` is validated against pyatv source separately
+  (`HidClickTest`), not against this button fixture.
+- **launch-app** — `_launchApp{_bundleID:"com.apple.TVSettings"}`; Settings
+  actually opened on the real device.
+- **media-play** — `_mcc{_mcc:1}`; acked `_rT:0`.
+
+**UNANSWERED on tvOS 26.5 (request-only fixtures — known upstream Apple regression):**
+
+- **FetchAttentionState** (`power-status`) and
+  **FetchLaunchableApplicationsEvent** (`apps-list`) receive **no reply** on
+  tvOS 26.5 (request times out). This is a known upstream Apple tvOS-26
+  regression — pyatv issue **#2823** / home-assistant **#168210**; **pyatv
+  itself fails identically** (pyatv disables `power_state` on this firmware),
+  so our port is correct. Only the request shape is capturable/asserted
+  (`FetchAttentionState{}` / `FetchLaunchableApplicationsEvent{}`, empty `_c`).
+  Response parsing — `_c={state:int}` 0x01–0x04 → PowerStatus, and the
+  `{bundleId:name}` app map — is unverifiable on this firmware and remains
+  covered by the synthetic-response unit tests
+  (`PowerControllerTest`/`AppsControllerTest`).
+
+**Swipe direction is tvOS-content-defined.** The `_cx/_cy` coordinates are not
+a stable directional contract — how a swipe is interpreted depends on the
+focused tvOS content/app, not on a fixed coordinate→direction mapping. For
+deterministic D-pad navigation use the HID buttons (Up/Down/Left/Right/Select
+via `_hidC`), not synthetic swipes.

@@ -3,10 +3,24 @@ package dev.atvremote.protocol.goldentrace
 import dev.atvremote.protocol.HapCredentials
 
 /**
- * Loader for the **SYNTHETIC** golden-trace fixtures under
+ * Loader for the golden-trace fixtures under
  * `protocol/src/test/resources/goldentrace/`.
  *
- * > ⚠️ These fixtures are NOT real tvOS captures. They are byte-deterministic
+ * There are **two kinds**, distinguished by the fixture's `mode` field:
+ *
+ *  - **synthetic** (`mode != "realDevice"`): pair-setup / pair-verify / HID.
+ *    Consumed via [out]`(i)` / [inFrame]`(i)` (byte-indexed step payloads).
+ *  - **realDevice** (`mode == "realDevice"`): the command fixtures
+ *    (touch-swipe / hid-click / launch-app / media-play / apps-list /
+ *    power-status), real tvOS-26.5 pyatv 0.17.0 captures. Consumed via
+ *    [outDecoded]`()` / [inDecoded]`()` by
+ *    [dev.atvremote.protocol.goldentrace.CommandsGoldenTest].
+ *
+ * > ⚠️ The synthetic caveat below applies **ONLY to the synthetic kind**
+ * > (`mode != "realDevice"`) — NOT to the realDevice command fixtures, which
+ * > are genuine real-device captures.
+ * >
+ * > Synthetic fixtures are NOT real tvOS captures. They are byte-deterministic
  * > traces produced by the in-repo reference oracle
  * > `dev.atvremote.tracetools.GoldenTraceGen` (fixed seeds, no RNG). The oracle
  * > implements BOTH the controller and accessory roles of pair-setup,
@@ -21,7 +35,8 @@ import dev.atvremote.protocol.HapCredentials
  * > `trace-tools/.../CaptureGuide.md` (which also flips `"mode"` →
  * > `"realDevice"`).
  *
- * Frame / index contract (so Task 11/12 calls mesh exactly):
+ * Frame / index contract for the **synthetic** kind (so Task 11/12 calls mesh
+ * exactly):
  *  - pair-setup steps = [out M1, in M2, out M3, in M4, out M5, in M6]
  *    → `out(0)`=M1, `inFrame(1)`=M2, `out(2)`=M3, `inFrame(3)`=M4,
  *      `out(4)`=M5, `inFrame(5)`=M6
@@ -59,6 +74,22 @@ class GoldenTrace private constructor(
         require(s.dir == "in") { "step $i is dir='${s.dir}', expected 'in'" }
         return s.opack
     }
+
+    /**
+     * The `decoded` OPACK dicts of every `dir == "out"` step, in capture order.
+     *
+     * Used by the realDevice command-conformance suite
+     * ([dev.atvremote.protocol.goldentrace.CommandsGoldenTest]) to compare the
+     * frames our transports emit against the real tvOS capture by *structure*
+     * (`_i`, `_c`, `_tPh`, …) — never by raw `_ns`/`_x`. Additive; does not
+     * alter the `out`/`inFrame` byte indexing the synthetic Plan-1 goldens use.
+     */
+    fun outDecoded(): List<Map<String, Any?>> =
+        steps.filter { it.dir == "out" }.map { it.decoded }
+
+    /** As [outDecoded] but for every `dir == "in"` step, in capture order. */
+    fun inDecoded(): List<Map<String, Any?>> =
+        steps.filter { it.dir == "in" }.map { it.decoded }
 
     // ── Fixed deterministic inputs embedded in the fixture ──────────────────
 
