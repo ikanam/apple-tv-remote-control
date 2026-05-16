@@ -7,7 +7,10 @@
 Android remote for Apple TV over the Companion protocol, built in 3 phases
 (`docs/superpowers/plans/`):
 - **Plan 1 — `:protocol` foundation** (pure Kotlin/JVM lib) + `:trace-tools` CLI
-- **Plan 2 — companion command set** (touch/keyboard/apps/power/volume/events) — NOT started
+- **Plan 2 — companion command set** (touch/keyboard/apps/power/volume/events)
+  — **code-first COMPLETE** (Tasks 1–4, 7, 9, 11, 12c, 13, 17, 18 + pyatv-wins
+  fixes); device-dependent tasks (5/6/8/10/12-golden/14/15/16/19/20) deferred —
+  see `docs/PLAN-2-DEVICE-SESSION-RUNBOOK.md`
 - **Plan 3 — Android app + UI** — NOT started (no Android module exists yet)
 
 Git: branch `main`, pushed to `origin`
@@ -103,15 +106,66 @@ pyatv does the same (`if self._chacha and len>0`); correct given the C3
 ordering fix, so it is NOT changed (changing it would diverge from the
 authoritative reference).
 
+### Plan 2 (companion command set): code-first COMPLETE (2026-05-16)
+
+Executed code-first (per user decision) via subagent-driven dev with the same
+two-stage review gate + pyatv-wins discipline. **101 tests green** (protocol 92
++ trace-tools 9) from a clean build, reproducibly (verified across multiple
+`clean test` runs). All work committed per-task on `main`, **not yet pushed**
+(origin still at the pre-Plan-2 commit). `Api.kt` Plan-1 surface untouched
+(append/extend only); `PairSetupGoldenTest`/`PairVerifyGoldenTest`/
+`SessionHandshakeTest`/`ButtonTest` byte-identical.
+
+Done: T1 API types; T2 `SessionChannel`+`FakeProtocol`; T3 `TouchTransport`;
+T4 wire `touch()`; T7 `HidCommands`+`click()`; T9 `AppsController`; T11
+`PowerController`; T12c `MediaController` (code only); T13 `Plist` (bplist00);
+T17 `EventSubscriptions`; T18 `ResilientSession`+reconnect supervisor+
+drop-signal. New `docs/PROTOCOL.md` is the verified wire reference.
+
+**pyatv-wins corrections made (the plan was wrong; pyatv was decisive — same
+discipline as Task-17 Bug C):**
+- **`_hidT` is fire-and-forget `sendEvent` (`_t=1`), NOT `exchange`.** The plan
+  coded `ch.exchange("_hidT")` in T3/T7; pyatv `hid_event` uses `_send_event`.
+  `exchange` blocks ~5 s/frame awaiting a reply tvOS never sends (a swipe ≈
+  50 s of timeouts). `_touchStart`/`_touchStop`/`_hidC`/`FetchAttentionState`/
+  `_launchApp`/`_mcc`/`_interest`-reg are correctly per-pyatv (`exchange` for
+  commands, `sendEvent` for `_interest`). Transport-per-frame table is in
+  `docs/PROTOCOL.md`.
+- **`click()`**: DoubleTap emits the Click-touch **inside** the per-tap loop (2
+  Click-touches); Hold **does** send a trailing Click-touch (plan said none);
+  click-touch is `_cx:1000,_cy:1000` + live `_ns`.
+- **`FetchAttentionState`** response `_c` is a map `{"state":<int>}` (plan said
+  bare int); 0x01→Off, 0x02/03/04→On, else Unknown.
+- **`EventSubscriptions`** tracks the active set **after** a successful send
+  (pyatv `subscribe_event` order), not before.
+- **`Plist.writeInt`** bplist00 length-escape used wrong marker `0x11`
+  (2-byte) while writing 1 byte → corrupts any container ≥15 long; fixed to
+  `0x10`. (Plan-authored format bug; would have broken T14/15 real blobs.)
+- **`CompanionConnection.awaitClosed()`** must emit from `close()` itself, not
+  only from `readLoop`'s `finally` — a `close()` racing ahead of readLoop's
+  first dispatch (`scope.cancel()` before the coroutine body starts) otherwise
+  never signals (the resilience supervisor depends on this).
+- Known `Plist` limits (documented, watch in T14/15): UID/refs capped at 255;
+  4-byte `0x22` float read as 8-byte double.
+
+**Keyboard members (`textGet/Set/Clear/Append`, `keyboardFocus`) are still
+Task-1 `NotImplementedError` stubs BY DESIGN** — T16 depends on the deferred
+real `_tiD` capture (T14/15). The `connectionState` of a standalone
+`CompanionSessionImpl` is always `Connected`; the live value is owned by the
+wrapping `ResilientSession` (T19, deferred, is the zero-stubs/flows gate).
+
 ## Resume checklist (next session)
-1. `git pull` (work is on `main` @ origin).
-2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **64
+1. `git pull` (Plan-2 work is committed on `main`; **push when ready** — it is
+   currently local-only, gated on the device validation below).
+2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **101
    tests green**, `PairSetupGoldenTest` byte-identical.
 3. Re-confirm real device: `scan` → `客厅 … AppleTV14,1 … true`; then
    `pair "客厅@192.168.7.134:49153"` (type the PIN shown on the TV) →
-   `Paired`; then `menu "客厅@..."` → `OK` + TV reacts.
-4. Optional next work: replace synthetic fixtures with a real pyatv capture
-   per `trace-tools/.../CaptureGuide.md` (makes the golden tests a real-device
-   baseline); then Plan 2 (companion command set).
+   `Paired`; then `menu "客厅@..."` → `OK` + TV reacts (this also regression-
+   checks the new `ResilientSession` wrap is transparent when Connected).
+4. **Plan-2 device session**: follow `docs/PLAN-2-DEVICE-SESSION-RUNBOOK.md`
+   — pair pyatv with 客厅 (never done), capture golden traces (T5/14),
+   conformance tests (T6/8/10/12-golden/15), `KeyboardController` (T16),
+   zero-stubs/flows gate (T19), CLI + full device smoke (T20). Then push.
 5. Project memory: `/Users/shinya/.claude/projects/-Users-shinya-Downloads-apple-tv-controller/memory/`
    (`MEMORY.md` index).
