@@ -118,10 +118,15 @@ class CompanionProtocol(
 
     /**
      * Sends a one-way event (no wait for response).
+     *
+     * pyatv-wins (DIV-1): pyatv's send_opack injects _x into EVERY outbound OPACK frame,
+     * including fire-and-forget events (_t=1), drawing from the same shared monotonic
+     * counter as exchange(). We mirror that exactly here.
      */
     override suspend fun sendEvent(name: String, content: Map<String, Any?>) {
+        val myXid = xidCounter.getAndIncrement() and 0xFFFF
         val payload = Opack.pack(
-            mapOf("_i" to name, "_t" to 1, "_c" to content)
+            mapOf("_i" to name, "_t" to 1, "_c" to content, "_x" to myXid)
         )
         conn.send(FrameType.E_OPACK, payload)
     }

@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
 
 /**
  * A test double that intercepts the E_OPACK send, invokes [respond], and pushes the result back.
@@ -34,6 +36,32 @@ class FakeConnection(
     override suspend fun send(type: FrameType, payload: ByteArray) {
         val responsePayload = respond(payload)
         _frames.emit(Pair(type, responsePayload))
+    }
+}
+
+/**
+ * A [FrameTransport] that records every (type, payload) sent to it.
+ * Unlike [FakeConnection] it does NOT auto-echo a response — suitable for
+ * testing fire-and-forget sends such as [CompanionProtocol.sendEvent].
+ */
+class RecordingConnection : FrameTransport {
+    val sent = mutableListOf<Pair<FrameType, ByteArray>>()
+
+    private val _frames = MutableSharedFlow<Pair<FrameType, ByteArray>>(
+        replay = 16,
+        extraBufferCapacity = 64
+    )
+
+    override fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames
+
+    override suspend fun send(type: FrameType, payload: ByteArray) {
+        sent.add(type to payload)
+        // No auto-response — caller must push via pushFrame if needed.
+    }
+
+    /** Push an inbound frame (for tests that need to simulate a response). */
+    suspend fun pushFrame(type: FrameType, payload: ByteArray) {
+        _frames.emit(type to payload)
     }
 }
 
@@ -108,5 +136,69 @@ class CompanionProtocolTest {
         }
 
         proto.close()
+    }
+
+    /**
+     * pyatv-wins (DIV-1): send_opack injects _x into EVERY outbound OPACK frame,
+     * including fire-and-forget events (_t=1). sendEvent must add _x from the
+     * shared xid counter — exactly like exchange() does.
+     *
+     * RED: before the fix, the sent frame has no _x key → assertNotNull fails.
+     */
+    @Test fun sendEventIncludesXid() = runTest {
+        val conn = RecordingConnection()
+        val proto = CompanionProtocol(conn, coroutineContext)
+
+        proto.sendEvent("_interest", mapOf("_regEvents" to listOf("_iMC")))
+
+        proto.close()
+
+        assertEquals(1, conn.sent.size)
+        val (_, payload) = conn.sent[0]
+        @Suppress("UNCHECKED_CAST")
+        val decoded = Opack.unpack(payload).first as Map<String, Any?>
+        // Must have _t=1 (event semantics unchanged)
+        assertEquals(1L, (decoded["_t"] as Number).toLong())
+        // Must have _x (pyatv send_opack always injects _x)
+        assertNotNull(decoded["_x"], "_x must be present in sendEvent frame (pyatv-wins)")
+    }
+
+    /**
+     * pyatv-wins (DIV-1): sendEvent and exchange draw from ONE shared monotonic
+     * counter. Two consecutive calls (one sendEvent, one exchange) must produce
+     * distinct, increasing xids — proving they share the same sequence.
+     *
+     * RED: before the fix, sendEvent produces no _x so the xids cannot be compared.
+     */
+    @Test fun sendEventAndExchangeShareMonotonicXidCounter() = runTest {
+        val conn = RecordingConnection()
+        val proto = CompanionProtocol(conn, coroutineContext)
+
+        // Fire the event first — no response expected.
+        proto.sendEvent("_interest", mapOf("_regEvents" to listOf("_iMC")))
+
+        // Now do an exchange; push the response manually so exchange() can complete.
+        // We'll do this without actually awaiting — just capture what was sent.
+        // To avoid a timeout we can push the response synchronously after send.
+        // Use a separate FakeConnection for the exchange part so we don't need to
+        // coordinate with RecordingConnection's pushFrame timing. Instead, capture
+        // both frames from two successive sendEvent calls (both fire-and-forget) so
+        // no response coordination is needed.
+        proto.sendEvent("_hidT", mapOf("_hid" to 0))
+
+        proto.close()
+
+        assertEquals(2, conn.sent.size)
+        @Suppress("UNCHECKED_CAST")
+        val xid0 = ((Opack.unpack(conn.sent[0].second).first as Map<String, Any?>)["_x"] as Number).toLong()
+        @Suppress("UNCHECKED_CAST")
+        val xid1 = ((Opack.unpack(conn.sent[1].second).first as Map<String, Any?>)["_x"] as Number).toLong()
+
+        assertNotNull(xid0, "first sendEvent must have _x")
+        assertNotNull(xid1, "second sendEvent must have _x")
+        assertNotEquals(xid0, xid1, "consecutive sendEvent calls must draw distinct xids from the shared counter")
+        // Xids are monotonically increasing (mod 0xFFFF wrap is possible in theory
+        // but not in two consecutive calls starting from a random < 65536).
+        assertEquals(xid0 + 1, xid1, "xids must be consecutive (shared counter increments by 1)")
     }
 }
