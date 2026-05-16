@@ -1,7 +1,14 @@
 package dev.atvremote.protocol.session
 
 import dev.atvremote.protocol.CompanionSession
+import dev.atvremote.protocol.ConnectionState
+import dev.atvremote.protocol.InputAction
+import dev.atvremote.protocol.InstalledApp
+import dev.atvremote.protocol.KeyboardFocusState
+import dev.atvremote.protocol.MediaCommand
+import dev.atvremote.protocol.PowerStatus
 import dev.atvremote.protocol.RemoteButton
+import dev.atvremote.protocol.TouchPhase
 import dev.atvremote.protocol.connection.CommandChannel
 
 /**
@@ -60,4 +67,20 @@ class CompanionSessionImpl(
         }
         onClose()
     }
+
+    // ---- Plan-2 stubs (replaced with real bodies in later tasks) ----
+
+    override suspend fun touch(x: Int, y: Int, phase: TouchPhase): Unit = throw NotImplementedError()
+    override suspend fun click(action: InputAction): Unit = throw NotImplementedError()
+    override suspend fun textGet(): String = throw NotImplementedError()
+    override suspend fun textSet(text: String): Unit = throw NotImplementedError()
+    override suspend fun textClear(): Unit = throw NotImplementedError()
+    override suspend fun textAppend(text: String): Unit = throw NotImplementedError()
+    override val keyboardFocus = kotlinx.coroutines.flow.MutableStateFlow(KeyboardFocusState.Unfocused)
+    override suspend fun listApps(): List<InstalledApp> = throw NotImplementedError()
+    override suspend fun launchApp(bundleId: String): Unit = throw NotImplementedError()
+    override suspend fun power(on: Boolean): Unit = throw NotImplementedError()
+    override suspend fun powerStatus(): PowerStatus = throw NotImplementedError()
+    override suspend fun media(command: MediaCommand): Unit = throw NotImplementedError()
+    override val connectionState = kotlinx.coroutines.flow.MutableStateFlow(ConnectionState.Connected)
 }

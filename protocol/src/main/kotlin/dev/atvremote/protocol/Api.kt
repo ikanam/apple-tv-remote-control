@@ -54,6 +54,33 @@ interface DeviceDiscovery { fun devices(): Flow<List<AppleTvDevice>> }
 interface CompanionSession {
     suspend fun button(button: RemoteButton, down: Boolean)
     suspend fun close()
+
+    /** Single touch event. x/y are clamped to 0..1000 (TOUCHPAD is 1000x1000). */
+    suspend fun touch(x: Int, y: Int, phase: TouchPhase)
+    /** Click using the Select HID button + a Click-phase touch (see InputAction). */
+    suspend fun click(action: InputAction)
+    /** Read the text currently in the focused field on the TV. */
+    suspend fun textGet(): String
+    /** Replace the focused field's text with [text]. */
+    suspend fun textSet(text: String)
+    /** Clear the focused field's text. */
+    suspend fun textClear()
+    /** Append [text] to the focused field. */
+    suspend fun textAppend(text: String)
+    /** Hot StateFlow of keyboard focus, driven by _tiStarted/_tiStopped/_tiStart events. */
+    val keyboardFocus: kotlinx.coroutines.flow.StateFlow<KeyboardFocusState>
+    /** List installed launchable apps. */
+    suspend fun listApps(): List<InstalledApp>
+    /** Launch an app by bundle id (or URL/scheme). */
+    suspend fun launchApp(bundleId: String)
+    /** Wake (true) or sleep (false) the Apple TV via HID. */
+    suspend fun power(on: Boolean)
+    /** Query power state via FetchAttentionState. */
+    suspend fun powerStatus(): PowerStatus
+    /** Play/Pause/NextTrack/PreviousTrack via the media control command. */
+    suspend fun media(command: MediaCommand)
+    /** Hot StateFlow of connection lifecycle (resilient session). */
+    val connectionState: kotlinx.coroutines.flow.StateFlow<ConnectionState>
 }
 
 interface PairingHandle {
@@ -68,3 +95,30 @@ object AppleTvRemote {
     suspend fun connect(device: AppleTvDevice, credentials: HapCredentials): CompanionSession =
         RemoteConnect.connect(device, credentials)
 }
+
+/** Touch phase wire values (pyatv companion _hidT _tPh). */
+enum class TouchPhase(val value: Int) { Press(1), Hold(3), Release(4), Click(5) }
+
+/** Logical click gesture. Ordinals are LOCKED: SingleTap=0, DoubleTap=1, Hold=2. */
+enum class InputAction { SingleTap, DoubleTap, Hold }
+
+/** Whether the Apple TV currently has a text field focused. */
+enum class KeyboardFocusState { Focused, Unfocused }
+
+/** An app installed on the Apple TV. */
+data class InstalledApp(val bundleId: String, val name: String)
+
+/** Power state derived from FetchAttentionState SystemStatus. */
+enum class PowerStatus { On, Off, Unknown }
+
+/** Media transport commands (pyatv MediaControlCommand subset used by v1). */
+enum class MediaCommand(val value: Int) { Play(1), Pause(2), NextTrack(3), PreviousTrack(4) }
+
+/** Live connection lifecycle, exposed by CompanionSession.connectionState. */
+enum class ConnectionState { Connected, Reconnecting, Disconnected }
+
+/**
+ * Thrown by keyboard/app/media/power calls that cannot complete because the
+ * session is currently Reconnecting or Disconnected.
+ */
+class CompanionUnavailableException(message: String) : Exception(message)
