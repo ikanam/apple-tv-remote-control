@@ -52,6 +52,14 @@ interface CommandChannel {
 }
 
 /**
+ * [CommandChannel] plus the inbound event stream. Implemented by [CompanionProtocol]
+ * (its `events` member already exists). Consumed by KeyboardController / EventSubscriptions.
+ */
+interface SessionChannel : CommandChannel {
+    val events: kotlinx.coroutines.flow.SharedFlow<Pair<String, Map<String, Any?>>>
+}
+
+/**
  * Protocol layer on top of a [FrameTransport]:
  * - Request/response correlation via `_x` (XID)
  * - Event fan-out for `_t == 1` messages
@@ -60,7 +68,7 @@ interface CommandChannel {
 class CompanionProtocol(
     private val conn: FrameTransport,
     context: CoroutineContext = SupervisorJob() + Dispatchers.Default,
-) : CommandChannel {
+) : SessionChannel {
 
     // Always create a fresh SupervisorJob as a child of any Job in the provided context.
     // This ensures close() cancels only this scope's job, never the caller's job (e.g. a test scope).
@@ -81,7 +89,7 @@ class CompanionProtocol(
         replay = 0,
         extraBufferCapacity = 64
     )
-    val events: SharedFlow<Pair<String, Map<String, Any?>>> = _events.asSharedFlow()
+    override val events: SharedFlow<Pair<String, Map<String, Any?>>> = _events.asSharedFlow()
 
     init {
         // Start the internal collector before any exchange/send calls
