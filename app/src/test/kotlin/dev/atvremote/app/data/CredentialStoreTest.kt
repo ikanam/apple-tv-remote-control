@@ -1,6 +1,7 @@
 package dev.atvremote.app.data
 
 import androidx.test.core.app.ApplicationProvider
+import dev.atvremote.protocol.AppleTvDevice
 import kotlinx.coroutines.test.runTest
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -9,6 +10,7 @@ import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 
 @RunWith(RobolectricTestRunner::class)
@@ -53,5 +55,44 @@ class CredentialStoreTest {
 
     @Test fun missingDeviceReturnsNull() = runTest {
         assertNull(store().load("nope"))
+    }
+
+    // ── S1: lastDevice / saveLastDevice ──────────────────────────────────────
+
+    @Test fun lastDeviceRoundTrips() = runTest {
+        val device = AppleTvDevice("dev-A", "Living Room", "10.0.0.5", 49152, "AppleTV14,1", true)
+        val s = store()
+        s.saveLastDevice(device)
+        assertEquals(device, s.lastDevice())
+    }
+
+    @Test fun lastDeviceRoundTripsNullModelAndTrickyName() = runTest {
+        val device = AppleTvDevice(
+            "dev-B",
+            "Bed|room, \"主\" 卧",
+            "10.0.0.6",
+            49153,
+            null,
+            false,
+        )
+        val s = store()
+        s.saveLastDevice(device)
+        val result = s.lastDevice()
+        assertEquals(device, result)
+        // Specifically confirm null model is NOT treated as empty string
+        assertNull(result?.model)
+    }
+
+    @Test fun lastDeviceCiphertextIsNotPlaintext() = runTest {
+        val device = AppleTvDevice("dev-A", "Living Room", "10.0.0.5", 49152, "AppleTV14,1", true)
+        val s = store()
+        s.saveLastDevice(device)
+        val raw = s.rawStoredLastDevice()
+        assertFalse(raw?.contains("10.0.0.5") == true, "host should not appear in plaintext")
+        assertFalse(raw?.contains("Living Room") == true, "name should not appear in plaintext")
+    }
+
+    @Test fun lastDeviceMissingReturnsNull() = runTest {
+        assertNull(store().lastDevice())
     }
 }
