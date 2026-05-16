@@ -120,6 +120,70 @@ Plan-2 Task 7 code block also specified `"_ns" to 0L` (constant zero). pyatv use
 
 ---
 
+### RTIKeyedArchiver `_tiD` graph (Task 14 — verified vs real tvOS 26.5)
+
+`_tiStart`/`_tiC` carry a `_c._tiD` value that is a **`bplist00` NSKeyedArchiver
+blob** (`$archiver = "RTIKeyedArchiver"`, `$version = 100000`, top-level keys
+`$version`/`$archiver`/`$top`/`$objects`). `KeyedArchiver`
+(`session/rti/KeyedArchiver.kt`) is a faithful port of pyatv
+`pyatv/protocols/companion/keyed_archiver.py` `read_archive_properties`.
+
+**pyatv-wins reconciliation (CLAUDE.md rule).** pyatv's resolver is a *lazy
+path-follower*: it `plistlib.loads` the blob, starts `element = data["$top"]`,
+and for each path key does `element = element[key]`; **if** the element is a
+`CF$UID` it dereferences it **once** via `$objects[uid]` and continues. It does
+**NOT** collapse `NS.keys`/`NS.objects`/`NS.string`/`NS.uuidbytes` containers,
+does **NOT** strip `$class`, and yields `None` on any `KeyError`/`IndexError`.
+The Plan-2 Task-14 *draft* `KeyedArchiver.kt` (eager full-graph resolver that
+collapsed all `NS.*` containers and stripped `$class`) **diverges from pyatv
+and was NOT ported** — our port mirrors pyatv's lazy one-hop semantics exactly.
+The plan's draft test path `documentState → docSt → contextBeforeInput` does
+**not exist** in the real capture and was likewise discarded (captured bytes
+are the authority).
+
+**Verified real `$objects`/`$top` graph — `keyed-archiver-tiD.json`** (App
+Store search field focused, empty; 1987 B blob, 44 `$objects`):
+
+- `$top = { documentState: UID(1), documentTraits: UID(5), sessionUUID: UID(43) }`
+- `documentState` → `obj[1] = { docSt:UID(2), originatedFromSource:false,
+  updateMask:0, $class:UID(4) }` (RTIDocumentState)
+- `documentState → docSt` → `obj[2] = { $class:UID(3) }` (TIDocumentState — no
+  text fields on an empty search field; **there is no `contextBeforeInput`**)
+- `sessionUUID` → `obj[43] = <16 raw bytes>` (the session UUID stored
+  **directly as `$objects` data**, NOT wrapped in an `NSUUID{NS.uuidbytes}`)
+- `documentTraits` → `obj[5]` = RTIDocumentTraits; nested values are `CF$UID`s
+  one hop into `$objects` strings:
+  `bId`→`obj[7]="com.wuziqi.SenPlayer"`, `app`→`obj[8]="SenPlayer"`,
+  `prompt`→`obj[9]="搜索"` (UTF-16), plus `tiTraits`→TITextInputTraits,
+  `traitsMask`/`afMode`/`cfmType` scalars.
+
+**Verified `textOperations` graph — `text-set.json`** (two outbound `_tiC`
+`_t=1` events):
+
+- `$top = { textOperations: UID(1) }`
+- clear step: `obj[1] = { keyboardOutput:UID(2), targetSessionUUID:UID(5),
+  textToAssert:UID(4), $class:UID(7) }` (RTITextOperations);
+  `textToAssert`→`obj[4]=""`; `keyboardOutput`→`obj[2]={ $class }`
+  (TIKeyboardOutput, no insertion);
+  `targetSessionUUID`→`obj[5]={ NS.uuidbytes:<16B>, $class:UID(6) }` (NSUUID —
+  here the UUID **is** the `NSUUID{NS.uuidbytes}` wrapper; pyatv keeps the
+  wrapper, it does not unwrap `NS.uuidbytes`)
+- insert step: `keyboardOutput`→`obj[2]={ insertionText:UID(3), $class }`;
+  `insertionText`→`obj[3]="HelloWorld"` (ASCII, not UTF-16)
+
+Note the **two distinct UUID encodings** for the same logical session id: a
+bare 16-byte `$objects` data leaf in the `_tiD` documentState blob vs an
+`NSUUID{NS.uuidbytes}` wrapper in the `textOperations` blob. pyatv (and our
+port) returns each verbatim — callers extract bytes per shape (relevant to
+Task 15 `RtiPayloads` / Task 16 `KeyboardController`).
+
+`KeyedArchiver.readProperty(blob, *path)` ports the single-path form;
+`readProperties(blob, paths…)` ports pyatv's variadic `(*paths) -> tuple`
+(parses once, independent paths, `null` on miss). Built on `Plist.read`
+(`$objects` ≤ 44 here, well under the documented 255-UID Plist limit).
+
+---
+
 ## Real tvOS 26.5 device-session findings (2026-05-16)
 
 Six golden traces were captured from the real Apple TV (**客厅 / AppleTV14,1 /
