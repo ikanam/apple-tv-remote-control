@@ -74,6 +74,7 @@ class CompanionSessionImpl(
     private val hidCommands by lazy { HidCommands(channel) }
     private val appsController by lazy { AppsController(channel) }
     private val powerController by lazy { PowerController(channel) }
+    private val mediaController by lazy { MediaController(channel) }
 
     override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
         touchTransport.touch(x, y, phase)
@@ -90,6 +91,6 @@ class CompanionSessionImpl(
     override suspend fun launchApp(bundleId: String) { appsController.launch(bundleId) }
     override suspend fun power(on: Boolean) { powerController.power(on) }
     override suspend fun powerStatus(): PowerStatus = powerController.status()
-    override suspend fun media(command: MediaCommand): Unit = throw NotImplementedError()
+    override suspend fun media(command: MediaCommand) { mediaController.media(command) }
     override val connectionState = kotlinx.coroutines.flow.MutableStateFlow(ConnectionState.Connected)
 }
