@@ -131,4 +131,63 @@ class OpackDecodeTest {
         val result = Opack.unpack(bytes).first as Map<String, Any?>
         assertEquals("yes", result["true"])
     }
+
+    // ── D-4: empty string (0x40) must be added to decoder object-list (pyatv-parity) ─────────
+    //
+    // pyatv _unpack: add_to_object_list defaults True; no branch sets it False for 0x40..0x60,
+    // so empty string 0x40 IS appended (opack.py L174-176 — no add_to_object_list=False).
+    // Our old guard `sliceLen > 1` wrongly excluded 0x40 (it encodes as 1 byte: just the tag).
+    //
+    // Sequence ["", "aa", ""] encoded as:
+    //   0xD3  outer list count=3
+    //   0x40  empty string (sliceLen=1 — skipped by old guard)
+    //   0x42 0x61 0x61  "aa" (added to OL)
+    //   0xA0  back-ref index 0
+    //
+    // Pre-fix decoder OL: [0]="aa" → back-ref 0 → "aa"  (WRONG)
+    // Post-fix decoder OL: [0]="", [1]="aa" → back-ref 0 → ""  (pyatv-correct)
+    @Test fun d4_emptyStringBackRefResolvesCorrectly() {
+        val bytes = byteArrayOf(
+            0xD3.toByte(),        // outer list count=3
+            0x40,                 // empty string ""
+            0x42, 0x61, 0x61,    // "aa"
+            0xA0.toByte()         // back-ref index 0 → must resolve to ""
+        )
+        @Suppress("UNCHECKED_CAST")
+        val result = Opack.unpack(bytes).first as List<Any?>
+        assertEquals(3, result.size)
+        assertEquals("", result[0])
+        assertEquals("aa", result[1])
+        // pyatv-conformant: back-ref 0 resolves to "" (not "aa")
+        assertEquals("", result[2])
+    }
+
+    // ── D-5: empty data (0x70) must be added to decoder object-list (pyatv-parity) ──────────
+    //
+    // Same argument: 0x70 (empty ByteArray) encodes as 1 byte, old guard sliceLen>1 excluded it.
+    // pyatv L184-186: 0x70..0x90 branch — no add_to_object_list=False → stays True.
+    //
+    // Sequence [<empty>, <0x01 0x02>, <empty>] encoded as:
+    //   0xD3  outer list count=3
+    //   0x70  empty data (sliceLen=1 — skipped by old guard)
+    //   0x72 0x01 0x02  2-byte data (added to OL)
+    //   0xA0  back-ref index 0
+    //
+    // Pre-fix OL: [0]=[0x01,0x02] → back-ref 0 → [0x01,0x02]  (WRONG)
+    // Post-fix OL: [0]=[], [1]=[0x01,0x02] → back-ref 0 → []  (pyatv-correct)
+    @Test fun d5_emptyDataBackRefResolvesCorrectly() {
+        val bytes = byteArrayOf(
+            0xD3.toByte(),        // outer list count=3
+            0x70,                 // empty data ByteArray(0)
+            0x72, 0x01, 0x02,    // 2-byte data [0x01, 0x02]
+            0xA0.toByte()         // back-ref index 0 → must resolve to empty ByteArray
+        )
+        @Suppress("UNCHECKED_CAST")
+        val result = Opack.unpack(bytes).first as List<Any?>
+        assertEquals(3, result.size)
+        assertEquals(0, (result[0] as ByteArray).size)
+        assertEquals(2, (result[1] as ByteArray).size)
+        // pyatv-conformant: back-ref 0 resolves to empty ByteArray (not [0x01, 0x02])
+        assertEquals(0, (result[2] as ByteArray).size)
+    }
 }

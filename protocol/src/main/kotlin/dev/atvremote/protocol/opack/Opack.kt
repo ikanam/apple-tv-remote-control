@@ -110,12 +110,18 @@ object Opack {
 
     /**
      * Recursive decoder.  Returns (decoded-value, new-offset).
-     * Appends to [ol] for every value whose packed slice is > 1 byte,
-     * mirroring the encoder's ObjectList population order.
+     *
+     * A decoded value is appended to the back-ref object-list UNLESS it is:
+     *  - a back-ref (value already present in [ol]; guarded by pyatv's `value not in object_list`),
+     *  - an array or dict (add_to_object_list=False, opack.py L208/225), or
+     *  - a single-byte scalar: true/false/null/small-int 0x08..0x2F (add_to_object_list=False,
+     *    opack.py L146/149/152/161).
+     * All other tags — including empty string 0x40 and empty data 0x70 — keep the default
+     * add_to_object_list=True and are appended (opack.py L143/238-239).
+     * This mirrors pyatv `_unpack` exactly.
      */
     private fun decode(data: ByteArray, off: Int, ol: DecoderObjectList): Pair<Any?, Int> {
         val tag = data[off].toInt() and 0xFF
-        val startOff = off
 
         val (value, newOff) = when {
             // null
@@ -239,11 +245,12 @@ object Opack {
         //   (0x08..0x2F), arrays (0xD0..0xDF), dicts (0xE0..0xEF).
         // Back-refs (0xA0..0xC4) keep add_to_object_list=True but value is already present.
         // D-1 fix: arrays and dicts must NOT be added to the decoder object-list (pyatv:208,225).
+        // D-4/D-5 fix: empty string 0x40 and empty data 0x70 ARE added (pyatv default True);
+        //   dropping the old `sliceLen > 1` guard makes this pyatv-faithful.
         val isBackRef = tag in 0xA0..0xC4
         val isContainer = tag in 0xD0..0xDF || tag in 0xE0..0xEF
         val isSingleByteScalar = tag == 0x01 || tag == 0x02 || tag == 0x04 || tag in 0x08..0x2F
-        val sliceLen = newOff - startOff
-        if (!isBackRef && !isContainer && !isSingleByteScalar && sliceLen > 1) {
+        if (!isBackRef && !isContainer && !isSingleByteScalar) {
             ol.add(value)
         }
 
