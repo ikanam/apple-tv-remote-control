@@ -34,7 +34,12 @@ import dev.atvremote.protocol.connection.CommandChannel
  *                      every `_hidT` frame so touch timestamps are session-relative,
  *                      matching pyatv `hid_event` (api.py L303:
  *                      `_ns = time.time_ns() - self._base_timestamp`).
- *                      Defaults to 0 for test doubles that do not inject a base.
+ *                      **Production callers MUST supply this from
+ *                      [SessionHandshake.touchBaseNs].** Leaving it at the
+ *                      default 0 while [nanoClock] is `System.nanoTime()` yields
+ *                      a raw-nanoTime `_ns` — the pre-fix bug — that real tvOS
+ *                      rejects. The 0L default is for standalone unit-test
+ *                      doubles only (where [nanoClock] is also controlled).
  * @param nanoClock     monotonic clock source for touch `_ns` computation; injected
  *                      for deterministic testing. Defaults to [System.nanoTime].
  * @param onClose       optional teardown hook; called once when [close] is invoked.

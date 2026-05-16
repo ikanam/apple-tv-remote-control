@@ -99,20 +99,24 @@ internal object RemoteConnect {
             //    (pyatv sends `creds.client_id`). A mismatched `_idsID` makes
             //    tvOS ack `_systemInfo` but silently drop `_touchStart`.
             val clientIdStr = String(credentials.clientId, Charsets.UTF_8)
+            val nanoClock: () -> Long = { System.nanoTime() }
             val handshake = SessionHandshake(
                 proto,
                 deviceId = clientIdStr,
                 clientId = clientIdStr,
                 name = "Android",
                 model = "Android",
+                nanoClock = nanoClock,
             )
             handshake.run()
 
             // 5. Build the live CompanionSession; onClose tears down protocol +
             //    connection. The negotiated [SessionHandshake.sid] is passed so
             //    `_sessionStop` is accepted by tvOS (else "No sessionID").
+            //    The same [nanoClock] instance is shared so base-capture and
+            //    delta-compute use the identical clock reference.
             val impl = CompanionSessionImpl(proto, sid = handshake.sid,
-                touchBaseNs = handshake.touchBaseNs, onClose = {
+                touchBaseNs = handshake.touchBaseNs, nanoClock = nanoClock, onClose = {
                 proto.close()
                 conn.close()
             })
@@ -240,18 +244,22 @@ internal object RemoteConnect {
 
                     // C5: verbatim clientId string — same identity pair-verify authenticated.
                     val clientIdStr = String(credentials.clientId, Charsets.UTF_8)
+                    val nanoClock: () -> Long = { System.nanoTime() }
                     val newHandshake = SessionHandshake(
                         newProto,
                         deviceId = clientIdStr,
                         clientId = clientIdStr,
                         name = "Android",
                         model = "Android",
+                        nanoClock = nanoClock,
                     )
                     newHandshake.run()
 
                     // C6: sid + touchBaseNs from the new handshake.
+                    //    The same [nanoClock] instance is shared so base-capture and
+                    //    delta-compute use the identical clock reference.
                     val newImpl = CompanionSessionImpl(newProto, sid = newHandshake.sid,
-                        touchBaseNs = newHandshake.touchBaseNs, onClose = {
+                        touchBaseNs = newHandshake.touchBaseNs, nanoClock = nanoClock, onClose = {
                         newProto.close()
                         newConn.close()
                     })
