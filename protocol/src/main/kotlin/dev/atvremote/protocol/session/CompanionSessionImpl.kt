@@ -4,12 +4,16 @@ import dev.atvremote.protocol.CompanionSession
 import dev.atvremote.protocol.ConnectionState
 import dev.atvremote.protocol.InputAction
 import dev.atvremote.protocol.InstalledApp
-import dev.atvremote.protocol.KeyboardFocusState
 import dev.atvremote.protocol.MediaCommand
 import dev.atvremote.protocol.PowerStatus
 import dev.atvremote.protocol.RemoteButton
 import dev.atvremote.protocol.TouchPhase
 import dev.atvremote.protocol.connection.CommandChannel
+import dev.atvremote.protocol.connection.SessionChannel
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 
 /**
  * Concrete [CompanionSession] implementation backed by a [CommandChannel].
@@ -94,8 +98,23 @@ class CompanionSessionImpl(
                 mapOf("_i" to 1),
             )
         }
+        // Tear down the keyboard focus collector (and any other session-scoped
+        // coroutine). Cancellation is additive to the pyatv-validated
+        // _sessionStop/_touchStop/onClose sequence above — it does not alter
+        // wire behaviour. Safe even if `keyboardController` was never accessed
+        // (the `by lazy` collector simply never started; cancel() is a no-op).
+        sessionScope.cancel()
         onClose()
     }
+
+    /**
+     * Lifecycle scope for session-scoped coroutines (currently the keyboard
+     * focus collector). A standalone [SupervisorJob] so one failing collector
+     * never cancels the others; cancelled in [close]. Kept private — Plan-1's
+     * [CompanionSessionImpl] had no such scope, so this is added per the
+     * Task-16 plan note (no existing lifecycle scope to reuse).
+     */
+    private val sessionScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // ---- Plan-2 stubs (replaced with real bodies in later tasks) ----
 
@@ -104,6 +123,22 @@ class CompanionSessionImpl(
     private val appsController by lazy { AppsController(channel) }
     private val powerController by lazy { PowerController(channel) }
     private val mediaController by lazy { MediaController(channel) }
+
+    /**
+     * RTI keyboard controller. Needs the inbound `events` stream (focus) so it
+     * takes a [SessionChannel]; the LOCKED primary ctor accepts only a
+     * [CommandChannel] (so `CommandChannel`-only test doubles —
+     * `ButtonTest.RecordingProtocol2`, `SessionHandshakeTest.RecordingProtocol`
+     * — can be injected). The real `channel` is always a
+     * [dev.atvremote.protocol.connection.CompanionProtocol], which **is** a
+     * [SessionChannel]. The `as SessionChannel` cast lives inside this
+     * `by lazy` so it is exercised **only** when a keyboard member is actually
+     * used — the `CommandChannel`-only doubles never touch keyboard members, so
+     * they never trigger the cast (ButtonTest/SessionHandshakeTest stay green).
+     */
+    private val keyboardController by lazy {
+        KeyboardController(channel as SessionChannel, sessionScope)
+    }
 
     /**
      * Event subscription manager (pyatv `_interest`).
@@ -124,11 +159,11 @@ class CompanionSessionImpl(
     }
 
     override suspend fun click(action: InputAction) { hidCommands.click(action) }
-    override suspend fun textGet(): String = throw NotImplementedError()
-    override suspend fun textSet(text: String): Unit = throw NotImplementedError()
-    override suspend fun textClear(): Unit = throw NotImplementedError()
-    override suspend fun textAppend(text: String): Unit = throw NotImplementedError()
-    override val keyboardFocus = kotlinx.coroutines.flow.MutableStateFlow(KeyboardFocusState.Unfocused)
+    override suspend fun textGet(): String = keyboardController.textGet()
+    override suspend fun textSet(text: String) = keyboardController.textSet(text)
+    override suspend fun textClear() = keyboardController.textClear()
+    override suspend fun textAppend(text: String) = keyboardController.textAppend(text)
+    override val keyboardFocus get() = keyboardController.focus
     override suspend fun listApps(): List<InstalledApp> = appsController.listApps()
     // `bundleId` may also be a URL/scheme — AppsController.launch picks _bundleID vs _urlS
     override suspend fun launchApp(bundleId: String) { appsController.launch(bundleId) }

@@ -305,3 +305,131 @@ a stable directional contract — how a swipe is interpreted depends on the
 focused tvOS content/app, not on a fixed coordinate→direction mapping. For
 deterministic D-pad navigation use the HID buttons (Up/Down/Left/Right/Select
 via `_hidC`), not synthetic swipes.
+
+---
+
+### RTI keyboard text-input flow + focus state (Task 16 — verified vs pyatv)
+
+`KeyboardController` (`session/rti/`-backed, `session/KeyboardController.kt`) is
+a **faithful 1:1 port of pyatv `CompanionAPI.text_input_command`
+(`pyatv/protocols/companion/api.py:379-411`)** plus `_text_input_start`
+(`api.py:371-375`) / `_text_input_stop` (`api.py:377-378`) — the authoritative
+reference (CLAUDE.md pyatv-wins rule; line ranges = pyatv master 2026-05-16,
+also cited by function name in case upstream drifts). It ties the Task-14
+`KeyedArchiver` +
+Task-15 `RtiPayloads` into the live keyboard surface and owns the
+sessionUUID-threading that Task 15 explicitly deferred here.
+
+**pyatv has exactly one text primitive** — `text_input_command(text,
+clear_previous_input)`. There are **no** separate `text_get`/`text_set`/
+`text_clear`/`text_append` methods in pyatv. The locked `Api.kt` 4-method
+keyboard surface maps onto that single primitive with zero behavioural change:
+
+| `Api.kt` method | pyatv call | wire frames |
+|---|---|---|
+| `textGet()` | `text_input_command("",  clear=false)` | `_tiStop` + `_tiStart` only; returns current text |
+| `textClear()` | `text_input_command("",  clear=true)` | `_tiStop`+`_tiStart` + 1 clear `_tiC` |
+| `textAppend(t)` | `text_input_command(t,  clear=false)` | `_tiStop`+`_tiStart` + 1 input `_tiC` |
+| `textSet(t)` | `text_input_command(t,  clear=true)` | `_tiStop`+`_tiStart` + clear `_tiC` + input `_tiC` |
+
+Verbatim pyatv `text_input_command` flow (each call, every time):
+
+1. `_text_input_stop()` → **`exchange`** `_tiStop {}` (pyatv `_send_command`).
+2. `_text_input_start()` → **`exchange`** `_tiStart {}` (pyatv `_send_command`,
+   `_text_input_start` api.py:371-375), then pyatv
+   `dispatch("_tiStart", response._c)` (`api.py:374`; we surface that via the
+   focus flow below). *pyatv restarts the RTI session every call "so that we
+   have up-to-date data" (`text_input_command`, api.py:379-411) — this
+   `_tiStop`→`_tiStart` pair is NOT optional and is asserted by
+   `KeyboardControllerTest`.*
+3. `ti_data = response._c._tiD`; if absent → return `""` (pyatv `return None`,
+   collapsed to the locked non-null `String` API; an empty field is `""`).
+4. `keyed_archiver.read_archive_properties(ti_data, ["sessionUUID"],
+   ["documentState","docSt","contextBeforeInput"])` →
+   `(session_uuid, current_text)` (one variadic call; our 1:1 port
+   `KeyedArchiver.readProperties` parses the bplist **once**, then maps both
+   paths — no double parse). **Both paths are pyatv-verbatim
+   (`text_input_command`, api.py:379-411).** `sessionUUID` resolves to the
+   **bare 16-byte `$objects`
+   data leaf** (Task-14 graph: `$top.sessionUUID → obj[43] = <16 raw bytes>`,
+   *not* an `NSUUID{NS.uuidbytes}` wrapper — that wrapper form is only in the
+   *outbound* `textOperations` blob `RtiPayloads` builds). The text path
+   `documentState→docSt→contextBeforeInput` **does not exist** in the real
+   `keyed-archiver-tiD.json` capture (empty App Store search field) → pyatv's
+   `if current_text is None: current_text = ""` yields `""`. We port the path
+   AND the None→`""` fallback exactly; an empty field legitimately reads `""`.
+5. if `clear_previous_input`: **`sendEvent`** (fire-and-forget `_send_event`)
+   `_tiC {_tiV:1, _tiD: RtiPayloads.clearText(session_uuid)}`; `current_text=""`.
+6. if `text`: **`sendEvent`** `_tiC {_tiV:1, _tiD:
+   RtiPayloads.inputText(session_uuid, text)}`; `current_text += text`.
+7. return `current_text`.
+
+Transport split (consistent with `_hidT`/`_interest`): `_tiStart`/`_tiStop`
+are **`exchange`** (pyatv `_send_command`, request/response); `_tiC` is
+**`sendEvent`** (pyatv `_send_event`, fire-and-forget). The plan-draft's
+`text_set = ["_tiC","_tiC"]`-only assertion was incomplete — pyatv also does
+the `_tiStop`/`_tiStart` restart; the real sequence is asserted.
+
+**Three plan-draft inconsistencies reconciled (pyatv/captured-bytes win):**
+1. **Channel type** — `KeyboardController` needs the inbound `events` stream
+   for focus, so it takes `SessionChannel` (the draft's `CommandChannel` has no
+   `events`). `CompanionSessionImpl`'s **LOCKED** primary ctor stays
+   `(channel: CommandChannel, …)`; the keyboard controller is wired via
+   `by lazy { KeyboardController(channel as SessionChannel, sessionScope) }` —
+   the `as SessionChannel` cast is exercised **only** when a keyboard member is
+   actually used. The real `channel` is always `CompanionProtocol :
+   SessionChannel`; the `CommandChannel`-only test doubles
+   (`ButtonTest.RecordingProtocol2`, `SessionHandshakeTest.RecordingProtocol`)
+   never touch keyboard members, so they never trigger the cast (those locked
+   tests stay byte-identical/green).
+2. **`RtiPayloads` API** — draft `clear()`/`inputText(text)`/String-UUID/
+   random-UUID do not exist. Real `clearText(sessionUuid: ByteArray)` /
+   `inputText(sessionUuid, text)` (`require(size==16)`). The 16 bytes are the
+   `sessionUUID` leaf extracted in step 4 above (pyatv `text_input_command`,
+   api.py:379-411).
+3. **text-get path** — `documentState→docSt→contextBeforeInput` is the
+   pyatv-verbatim path (`text_input_command`, api.py:379-411); it is *absent*
+   in the real capture and correctly yields `""` via pyatv's None-fallback
+   (step 4). Not a bug.
+
+**`CompanionSessionImpl` wiring:** a `private val sessionScope =
+CoroutineScope(SupervisorJob() + Dispatchers.Default)` was added (Plan-1's impl
+had no lifecycle scope to reuse) and is `cancel()`-ed in `close()` **after**
+the existing pyatv-validated `_sessionStop`/`_touchStop`/`onClose` sequence
+(additive — no wire-behaviour change). The 4 `NotImplementedError` keyboard
+stubs + the temporary `keyboardFocus` `MutableStateFlow` stub are removed and
+delegate to the lazily-built `KeyboardController`. (`connectionState` stays the
+owned `MutableStateFlow(Connected)` — a T19 concern, untouched.)
+
+**Focus state — the focus-*state projection* is the project addition (honest
+framing).** The event *routing* does follow pyatv: `_text_input_start`
+dispatches `_tiStart` (`api.py:374`), and pyatv's `CompanionKeyboard`
+(`pyatv/protocols/companion/__init__.py:478-523`) listens to
+`_tiStarted`/`_tiStopped`/`_tiStart` (registered `__init__.py:487-491`) and
+routes all three through `_handle_text_input` (`__init__.py:493-500`), which
+derives `Focused` iff `"_tiD" in data` — exactly our collector's rule. What
+pyatv has no direct counterpart for is **exposing focus as a long-lived
+`StateFlow`** (pyatv pushes through a `state_dispatcher` instead): the
+`keyboardFocus: StateFlow<KeyboardFocusState>` projection is a **Plan-2
+project-specified** surface (`Api.kt` + the owner-approved plan "pyatv wire
+facts" line). Semantics (mirroring pyatv's `_handle_text_input`): an inbound
+event named `_tiStarted`, `_tiStopped`, or `_tiStart` with `_tiD` **present** ⇒
+`Focused`; absent ⇒ `Unfocused`; unrelated event names are ignored. The
+collector runs on
+`sessionScope` (auto-torn-down on `close()`; tests use `runTest`'s
+`backgroundScope`, which is cancelled when the test body completes —
+mirroring the production lifecycle and avoiding `runTest`'s
+`UncompletedCoroutinesError` for the never-completing `events.collect`).
+The `StateFlow` *projection shape* is the single deliberate Plan-2 addition in
+the RTI flow (the underlying `_tiStart`/`_tiStarted`/`_tiStopped` event routing
+is pyatv-faithful), flagged here for transparency (same discipline as the
+M6-signature / discovery-id non-reversions); the wire identifiers/semantics
+follow pyatv's `_handle_text_input` dispatch and the owner-specified plan, not
+invented protocol structure.
+
+**Device-validation owed:** the RTI keyboard flow is correct-by-construction
+vs pyatv `api.py` + the Task-14/15 real captures but is **not yet proven on
+real tvOS** — the deferred device session
+(`docs/PLAN-2-DEVICE-SESSION-RUNBOOK.md`, T16) must confirm
+`textSet`/`textClear`/`textAppend`/`textGet` + focus on the real 客厅 keyboard
+(pyatv never paired with 客厅 either; both gated by the same session).
