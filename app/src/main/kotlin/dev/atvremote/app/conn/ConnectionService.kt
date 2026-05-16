@@ -10,25 +10,47 @@ import android.os.Binder
 import android.os.Build
 import android.os.IBinder
 import dev.atvremote.app.AtvRemoteApp
+import dev.atvremote.protocol.AppleTvDevice
+import dev.atvremote.protocol.HapCredentials
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 
 /**
  * Foreground + bound service that owns the CompanionSession lifetime so it
  * survives Activity recreation / backgrounding (spec §7).
  *
- * NOTE: this Service is the intended long-lived owner of the connection; per
- * ConnectionManager's KDoc, the first connect() must be issued on the Service's
- * lifecycle scope (not a short-lived coroutine) and bind/unbind must sequence
- * connect()/disconnect(). Wiring the actual connect() call is a later (UI) task;
- * this skeleton only exposes the singleton manager.
+ * This Service is the long-lived owner of the connection. [serviceScope] is
+ * parented to the Service lifetime and cancelled in [onDestroy], satisfying
+ * [ConnectionManager]'s T6 contract (connect() must run on a scope that outlives
+ * any single Activity). [LocalBinder.launchConnect] runs
+ * [ConnectionManager.connect] on [serviceScope] so the connection survives
+ * Activity recreation and backgrounding. S5 (MainActivity) calls
+ * [LocalBinder.launchConnect] instead of the deprecated
+ * `lifecycleScope.launchWhenStarted`.
  */
 class ConnectionService : Service() {
     private val channelId = "atv_connection"
+
+    /** Service-lifetime coroutine scope. Cancelled in [onDestroy] before [super.onDestroy]. */
+    internal val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val connectionManager: ConnectionManager
         get() = (application as AtvRemoteApp).graph.connectionManager
 
     inner class LocalBinder : Binder() {
         fun manager(): ConnectionManager = connectionManager
+
+        /**
+         * Non-blocking: schedules [ConnectionManager.connect] on [serviceScope] and
+         * returns immediately. The connection runs on the Service lifetime scope, so it
+         * survives Activity recreation and backgrounding per the T6 contract.
+         */
+        fun launchConnect(device: AppleTvDevice, credentials: HapCredentials) {
+            serviceScope.launch { connectionManager.connect(device, credentials) }
+        }
     }
 
     private val binder = LocalBinder()
@@ -81,6 +103,7 @@ class ConnectionService : Service() {
     }
 
     override fun onDestroy() {
+        serviceScope.cancel()
         super.onDestroy()
     }
 }
