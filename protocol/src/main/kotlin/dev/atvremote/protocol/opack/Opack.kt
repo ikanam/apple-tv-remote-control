@@ -177,6 +177,9 @@ object Opack {
             tag == 0xC2 -> { val idx = leRead(data, off + 1, 2).toInt(); Pair(ol.get(idx), off + 3) }
             tag == 0xC3 -> { val idx = leRead(data, off + 1, 4).toInt(); Pair(ol.get(idx), off + 5) }
             tag == 0xC4 -> { val idx = leRead(data, off + 1, 8).toInt(); Pair(ol.get(idx), off + 9) }
+            // absolute/"date" tag 0x06: pyatv _unpack:156-158 — parse as 8-byte LE integer
+            // (not implemented as a real date; kept as Long, added to object-list like a scalar)
+            tag == 0x06 -> Pair(leRead(data, off + 1, 8), off + 9)
             // array 0xD0..0xDF
             tag in 0xD0..0xDF -> {
                 val nibble = tag and 0x0F
@@ -212,7 +215,8 @@ object Opack {
                         cur = kNext
                         val (v, vNext) = decode(data, cur, ol)
                         cur = vNext
-                        map[k as String] = v
+                        // D-3: use toString() — pyatv accepts any key type; real traffic uses strings
+                        map[k.toString()] = v
                     }
                 } else {
                     repeat(nibble) {
@@ -220,7 +224,8 @@ object Opack {
                         cur = kNext
                         val (v, vNext) = decode(data, cur, ol)
                         cur = vNext
-                        map[k as String] = v
+                        // D-3: use toString() — pyatv accepts any key type; real traffic uses strings
+                        map[k.toString()] = v
                     }
                 }
                 Pair(map as Map<String, Any?>, cur)
@@ -228,13 +233,17 @@ object Opack {
             else -> error("OPACK decode: unknown tag 0x%02X at offset %d".format(tag, off))
         }
 
-        // Mirror the encoder's ObjectList.add logic:
-        // The encoder calls packInto → encode → if packed.size > 1: check/add to ol.
-        // Back-refs themselves are never added; they reference already-added entries.
-        // Lists and dicts: their total packed slice IS added by the encoder (size > 1 when non-trivial).
-        val sliceLen = newOff - startOff
+        // pyatv _unpack decoder object-list rule (opack.py:238-239):
+        //   if add_to_object_list and value not in object_list: object_list.append(value)
+        // with add_to_object_list=False for: booleans (0x01/0x02), null (0x04), small ints
+        //   (0x08..0x2F), arrays (0xD0..0xDF), dicts (0xE0..0xEF).
+        // Back-refs (0xA0..0xC4) keep add_to_object_list=True but value is already present.
+        // D-1 fix: arrays and dicts must NOT be added to the decoder object-list (pyatv:208,225).
         val isBackRef = tag in 0xA0..0xC4
-        if (sliceLen > 1 && !isBackRef) {
+        val isContainer = tag in 0xD0..0xDF || tag in 0xE0..0xEF
+        val isSingleByteScalar = tag == 0x01 || tag == 0x02 || tag == 0x04 || tag in 0x08..0x2F
+        val sliceLen = newOff - startOff
+        if (!isBackRef && !isContainer && !isSingleByteScalar && sliceLen > 1) {
             ol.add(value)
         }
 
