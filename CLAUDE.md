@@ -123,6 +123,10 @@ T4 wire `touch()`; T7 `HidCommands`+`click()`; T9 `AppsController`; T11
 `PowerController`; T12c `MediaController` (code only); T13 `Plist` (bplist00);
 T17 `EventSubscriptions`; T18 `ResilientSession`+reconnect supervisor+
 drop-signal. New `docs/PROTOCOL.md` is the verified wire reference.
+(owner-approved Plan-2 §7 change 2026-05-16: while Reconnecting,
+`button()`/`click()` are **dropped** like `touch()` — no queue, no replay;
+remote commands are ephemeral, `connectionState` is exposed so callers
+re-issue when back.)
 
 **pyatv-wins corrections made (the plan was wrong; pyatv was decisive — same
 discipline as Task-17 Bug C):**

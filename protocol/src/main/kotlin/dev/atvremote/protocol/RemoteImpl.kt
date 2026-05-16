@@ -279,7 +279,7 @@ internal object RemoteConnect {
                     // Advance the tracked conn so the next loop iteration watches the NEW conn.
                     currentConn = newConn
 
-                    // Swap the delegate and mark Connected — flushes the button queue.
+                    // Swap the delegate and mark Connected (no replay — Plan-2 §7).
                     resilient.onReconnected(newImpl)
                     attempt = 0 // reset backoff on success
                 } catch (t: Throwable) {

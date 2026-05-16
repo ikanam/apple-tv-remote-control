@@ -103,14 +103,24 @@ Also exercised by the resilience end-to-end section below.
 The reconnect supervisor + drop-signal are code-complete and unit-tested but
 **never exercised against a live socket**. Confirm on 客厅:
 
-- Real Wi-Fi/TCP drop (e.g. briefly drop the network) while connected →
-  `CompanionConnection.awaitClosed()` fires (`SocketException`) →
-  `ResilientSession` goes `Reconnecting` → exponential backoff →
-  `PairVerify`+`SessionHandshake` (C3/C5/C6) re-auth on tvOS 18 →
-  `onReconnected` flushes the queued button(s) → session resumes.
-- During `Reconnecting`: touch dropped silently; button/click queued (≤32) then
-  flushed; keyboard/app/power/media throw `CompanionUnavailableException`.
-- Deliberate `close()` → supervisor cancelled → **no spurious reconnect**.
+- Real TCP drop while connected → `CompanionConnection.awaitClosed()` fires
+  (`SocketException`) → `ResilientSession` goes `Reconnecting` → exponential
+  backoff → `PairVerify`+`SessionHandshake` (C3/C5/C6) re-auth on tvOS 26.5 →
+  `onReconnected` swaps the delegate + flips state→`Connected` (**no replay** —
+  owner-approved Plan-2 §7 change 2026-05-16; buttons issued mid-reconnect were
+  dropped, caller re-issues) → session resumes.
+  **STIMULUS CAVEAT (2026-05-16, validated):** a brief macOS Wi-Fi off/on OR a
+  short Mac sleep does **NOT** sever the idle Companion TCP — the read loop just
+  stalls, in-flight `exchange` hits its 5 s timeout, then resumes on the SAME
+  session; `awaitClosed()` never fires (not a bug — under-stimulated). To
+  exercise the reconnect path you must force a real socket close (TCP RST via
+  `pfctl`/a kill tool, the TV side dropping, or a long/hard outage).
+- During `Reconnecting`: touch/button/click **dropped silently (no queue, no
+  replay)**; keyboard/app/power/media throw `CompanionUnavailableException`.
+- Deliberate `close()` → supervisor cancelled → **no spurious reconnect**
+  (✅ live-validated on 客厅 2026-05-16). Transparent-when-Connected also
+  ✅ live-validated; the drop-while-Reconnecting + reconnect-recovers path is
+  unit-tested only (live socket-sever stimulus unresolved — see caveat).
 - Credentials invalidated → `Disconnected`, loop stops (no infinite retry).
 
 ## On success

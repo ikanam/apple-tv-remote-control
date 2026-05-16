@@ -13,11 +13,11 @@ class ResilientSessionTest {
     /** Fake underlying CompanionSession that can flip its connectionState. */
     private class Fake : CompanionSession {
         val st = MutableStateFlow(ConnectionState.Connected)
-        var buttons = 0; var touches = 0; var medias = 0
+        var buttons = 0; var touches = 0; var medias = 0; var clicks = 0
         override suspend fun button(button: RemoteButton, down: Boolean) { buttons++ }
         override suspend fun close() {}
         override suspend fun touch(x: Int, y: Int, phase: TouchPhase) { touches++ }
-        override suspend fun click(action: InputAction) {}
+        override suspend fun click(action: InputAction) { clicks++ }
         override suspend fun textGet() = "x"
         override suspend fun textSet(text: String) {}
         override suspend fun textClear() {}
@@ -44,14 +44,19 @@ class ResilientSessionTest {
         assertFailsWith<CompanionUnavailableException> { rs.powerStatus() }
     }
 
-    @Test fun buttonQueuedThenFlushedOnReconnect() = runTest {
+    @Test fun buttonAndClickDroppedWhileReconnectingNotReplayed() = runTest {
         val fake = Fake()
         val rs = ResilientSession(fake)
         rs.setState(ConnectionState.Reconnecting)           // supervisor drives RS state
-        rs.button(RemoteButton.Menu, true)                  // queued, not yet delivered
+        rs.button(RemoteButton.Menu, true)                  // dropped (parity with touch)
+        rs.click(InputAction.SingleTap)                     // dropped (parity with touch)
         assertEquals(0, fake.buttons)
-        rs.onReconnected()                                  // flips RS state→Connected + flushes queue
+        assertEquals(0, fake.clicks)
+        rs.onReconnected()                                  // only flips RS state→Connected; no replay
         assertEquals(ConnectionState.Connected, rs.connectionState.value)
+        assertEquals(0, fake.buttons)                       // NOT replayed
+        assertEquals(0, fake.clicks)                        // NOT replayed
+        rs.button(RemoteButton.Menu, true)                  // passthrough resumes once Connected
         assertEquals(1, fake.buttons)
     }
 

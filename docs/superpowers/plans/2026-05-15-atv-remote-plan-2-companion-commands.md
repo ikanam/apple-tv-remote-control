@@ -2167,7 +2167,7 @@ git commit -m "feat(session): EventSubscriptions reg/dereg + restorable active s
 - Modify: `protocol/src/main/kotlin/dev/atvremote/protocol/session/CompanionSessionImpl.kt`
 - Test: `protocol/src/test/kotlin/dev/atvremote/protocol/connection/ResilientSessionTest.kt`
 
-Spec §7 + brief: on socket drop, exponential-backoff reconnect → re-run `PairVerify` + `SessionHandshake` (Plan 1) → restore subscriptions (Plan 2 Task 17). Expose `connectionState`. During `Reconnecting`: **drop** touch events, **briefly queue** button/click, **fail** keyboard/app/power/media calls with `CompanionUnavailableException`. `ResilientSession` is itself a `CompanionSession` (decorator) so `AppleTvRemote.connect` returns it transparently.
+Spec §7 + brief: on socket drop, exponential-backoff reconnect → re-run `PairVerify` + `SessionHandshake` (Plan 1) → restore subscriptions (Plan 2 Task 17). Expose `connectionState`. During `Reconnecting`: **drop** touch/button/click (parity — no queue, no replay; owner-approved Plan-2 §7 change 2026-05-16: remote commands are ephemeral), **fail** keyboard/app/power/media calls with `CompanionUnavailableException`. `ResilientSession` is itself a `CompanionSession` (decorator) so `AppleTvRemote.connect` returns it transparently.
 
 - [ ] **Step 0: pyatv source diff (MANDATORY — revision-log C/D / CLAUDE.md protocol-debugging rule)**
 
@@ -2192,11 +2192,11 @@ class ResilientSessionTest {
     /** Fake underlying CompanionSession that can flip its connectionState. */
     private class Fake : CompanionSession {
         val st = MutableStateFlow(ConnectionState.Connected)
-        var buttons = 0; var touches = 0; var medias = 0
+        var buttons = 0; var touches = 0; var medias = 0; var clicks = 0
         override suspend fun button(button: RemoteButton, down: Boolean) { buttons++ }
         override suspend fun close() {}
         override suspend fun touch(x: Int, y: Int, phase: TouchPhase) { touches++ }
-        override suspend fun click(action: InputAction) {}
+        override suspend fun click(action: InputAction) { clicks++ }
         override suspend fun textGet() = "x"
         override suspend fun textSet(text: String) {}
         override suspend fun textClear() {}
@@ -2224,14 +2224,19 @@ class ResilientSessionTest {
         assertFailsWith<CompanionUnavailableException> { rs.powerStatus() }
     }
 
-    @Test fun buttonQueuedThenFlushedOnReconnect() = runTest {
+    @Test fun buttonAndClickDroppedWhileReconnectingNotReplayed() = runTest {
         val fake = Fake()
         val rs = ResilientSession(fake)
         rs.setState(ConnectionState.Reconnecting)           // supervisor drives RS state
-        rs.button(RemoteButton.Menu, true)                  // queued, not yet delivered
+        rs.button(RemoteButton.Menu, true)                  // dropped (parity with touch)
+        rs.click(InputAction.SingleTap)                     // dropped (parity with touch)
         assertEquals(0, fake.buttons)
-        rs.onReconnected()                                  // flips RS state→Connected + flushes queue
+        assertEquals(0, fake.clicks)
+        rs.onReconnected()                                  // only flips RS state→Connected; no replay
         assertEquals(ConnectionState.Connected, rs.connectionState.value)
+        assertEquals(0, fake.buttons)                       // NOT replayed
+        assertEquals(0, fake.clicks)                        // NOT replayed
+        rs.button(RemoteButton.Menu, true)                  // passthrough resumes once Connected
         assertEquals(1, fake.buttons)
     }
 
@@ -2265,7 +2270,6 @@ package dev.atvremote.protocol.connection
 import dev.atvremote.protocol.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import java.util.concurrent.ConcurrentLinkedQueue
 
 /**
  * Decorator over a live CompanionSession implementing spec §7 resilience policy:
@@ -2273,10 +2277,18 @@ import java.util.concurrent.ConcurrentLinkedQueue
  *    onReconnected() from the supervisor. It does NOT mirror the delegate
  *    (a standalone CompanionSessionImpl is always Connected — Task 19).
  *  - while Reconnecting/Disconnected:
- *      touch()  -> dropped silently (gesture stream is disposable)
- *      button()/click() -> briefly queued, flushed on reconnect
+ *      touch()/button()/click() -> dropped silently, no queue and no replay
  *      keyboard/app/power/media -> throw CompanionUnavailableException
- *  - onReconnected() replays the queued buttons/clicks in order.
+ *  - onReconnected() only swaps the delegate + flips state to Connected;
+ *    nothing is replayed.
+ *
+ * Owner-approved Plan-2 §7 change (2026-05-16): button()/click() are dropped
+ * while not Connected — exact parity with touch() — no queue, no flush. Remote
+ * commands are ephemeral/contextual/non-idempotent (same reason touch() is
+ * dropped); reconnect is structurally multi-second so any replay is stale and a
+ * stale burst is surprising/destructive. connectionState is exposed so callers
+ * re-issue when back. NOT configurable.
+ *
  * The actual socket-drop detection + backoff + pair-verify + handshake + subscription
  * restore is driven by RemoteConnect.connect's supervisor, which calls
  * setState()/swapDelegate()/onReconnected() on this object (revision-log B/C).
@@ -2288,24 +2300,22 @@ class ResilientSession(initial: CompanionSession) : CompanionSession {
     @Volatile private var delegate: CompanionSession = initial
     private val _state = MutableStateFlow(ConnectionState.Connected)
     override val connectionState: StateFlow<ConnectionState> = _state
-    private val pending = ConcurrentLinkedQueue<suspend () -> Unit>()
 
     fun setState(s: ConnectionState) { _state.value = s }
 
-    /** Supervisor: install the freshly-reconnected session before flushing the queue. */
+    /** Supervisor: install the freshly-reconnected session. */
     fun swapDelegate(next: CompanionSession) { delegate = next }
 
-    /** [next] non-null on real reconnect (supervisor); null in unit tests that don't swap.
+    /** Optionally swaps the delegate + flips state to Connected. Nothing is
+     *  replayed (owner-approved Plan-2 §7 change 2026-05-16 — see class KDoc).
+     *  [next] non-null on real reconnect (supervisor); null in unit tests that don't swap.
+     *  (`suspend` retained for call-site compatibility — the supervisor awaits it.)
      *  NOTE: `keyboardFocus` is a `get()` over the current delegate, so callers should
      *  read `session.keyboardFocus` per-use rather than caching the StateFlow across a
      *  reconnect (documented decorator limitation; acceptable for v1). */
     suspend fun onReconnected(next: CompanionSession? = null) {
         if (next != null) delegate = next
         _state.value = ConnectionState.Connected
-        while (true) {
-            val op = pending.poll() ?: break
-            op()
-        }
     }
 
     private fun connected() = _state.value == ConnectionState.Connected
@@ -2316,17 +2326,15 @@ class ResilientSession(initial: CompanionSession) : CompanionSession {
     }
 
     override suspend fun button(button: RemoteButton, down: Boolean) {
-        if (connected()) delegate.button(button, down)
-        else if (pending.size < 32) pending.add { delegate.button(button, down) }
+        if (connected()) delegate.button(button, down)   // else drop silently
     }
 
     override suspend fun click(action: InputAction) {
-        if (connected()) delegate.click(action)
-        else if (pending.size < 32) pending.add { delegate.click(action) }
+        if (connected()) delegate.click(action)          // else drop silently
     }
 
     override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
-        if (connected()) delegate.touch(x, y, phase)   // else drop silently
+        if (connected()) delegate.touch(x, y, phase)     // else drop silently
     }
 
     override suspend fun textGet(): String { requireUp("textGet"); return delegate.textGet() }
@@ -2354,7 +2362,7 @@ Supervisor behavior:
 - On drop: `resilient.setState(Reconnecting)`, then loop with exponential backoff `delay(minOf(30_000L, 500L * (1L shl attempt)))` (cap 30s), each attempt rebuilding the **exact** verified path: new `CompanionConnection` + `conn.connect()` → `PairVerify` M1 (`PV_Start`) → consume raw M2 (`PV_Next`, bounded 5s) → M3 (`PV_Next`) → **C3: await the 2nd `PV_Next` (`conn.frames().filter{ft==PV_Next}.drop(1).first()`, replay-buffer caveat) BEFORE `enableEncryption`** → `enableEncryption(outKey,inKey)` → **C5: `SessionHandshake` with `String(credentials.clientId, UTF_8)` verbatim as deviceId/clientId** → on success rebuild `CompanionSessionImpl(newProto, sid = newHandshake.sid /* C6 */, onClose=…)`, swap it behind the `ResilientSession` delegate, re-issue `EventSubscriptions.restore()` (Plan 2 **Task 17**, not Plan 1) for the previously-active `_interest` set, then `resilient.onReconnected()`.
 - If pair-verify is rejected (credentials invalidated): `resilient.setState(Disconnected)` and stop the loop (spec §7 credential-invalidation — surfaced to the app, not retried forever).
 
-(Note: `ResilientSession` decorates a *swappable* delegate so the supervisor can replace the live `CompanionSessionImpl` on each successful reconnect; `connectionState`/queued-button replay are owned by `ResilientSession` as shown above.)
+(Note: `ResilientSession` decorates a *swappable* delegate so the supervisor can replace the live `CompanionSessionImpl` on each successful reconnect; `connectionState` is owned by `ResilientSession` as shown above. Per the owner-approved Plan-2 §7 change (2026-05-16), button/click are dropped while not Connected — like touch — with no queue and no replay; `onReconnected()` only swaps the delegate + flips state.)
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -2365,7 +2373,7 @@ Expected: PASS (all three tests).
 
 ```bash
 git add protocol/src/main/kotlin/dev/atvremote/protocol/connection/ResilientSession.kt protocol/src/main/kotlin/dev/atvremote/protocol/RemoteImpl.kt protocol/src/main/kotlin/dev/atvremote/protocol/session/CompanionSessionImpl.kt protocol/src/test/kotlin/dev/atvremote/protocol/connection/ResilientSessionTest.kt
-git commit -m "feat(connection): ResilientSession backoff reconnect + §7 drop/queue/fail policy"
+git commit -m "feat(connection): ResilientSession backoff reconnect + §7 drop/fail policy"
 ```
 
 ---
@@ -2515,7 +2523,7 @@ Spec §2 v1 features and §7 resilience → Task:
 | §2 媒体控制 (play/pause/track) | T12 (MediaController `_mcc`) |
 | 事件订阅/分发 (`_interest`) | T17 (EventSubscriptions reg/dereg/restore); inbound via Plan 1 `CompanionProtocol.events` |
 | §7 掉线指数退避自动重连 + pair-verify + 恢复订阅 | T18 (ResilientSession + `RemoteConnect.connect` supervisor replaying the C3/C5/C6 verified sequence: backoff, PairVerify+`enableEncryption`+SessionHandshake re-run, `EventSubscriptions.restore()`) |
-| §7 重连期间滑动丢弃、按钮短暂入队 | T18 (touch dropped; button/click queued ≤32, flushed on `onReconnected`); keyboard/app/power/media throw `CompanionUnavailableException` |
+| §7 重连期间滑动/按钮/点击全部丢弃 | T18 (touch/button/click dropped — parity, no queue/replay; owner-approved Plan-2 §7 change 2026-05-16); keyboard/app/power/media throw `CompanionUnavailableException` |
 | §7 凭证失效 → 不无限重试 | T18 (pair-verify rejection → `Disconnected`, stop) |
 | `connectionState` / `keyboardFocus` StateFlows | T16 (keyboardFocus), T18 (connectionState via ResilientSession), T19 (wiring + flows integration) |
 | Golden-trace methodology — **real pyatv capture** (revision-log E; no fabricated/synthetic wire bytes) | T5 (pair pyatv with 客厅 + capture touch/click/apps/power/media), T14 (capture real `_tiD`/`text_set`), T6/T8/T10/T12 (conformance), T15 (RTI vs `text-set.json`), T20 (live 客厅) |
