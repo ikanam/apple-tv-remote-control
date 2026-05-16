@@ -177,10 +177,80 @@ bare 16-byte `$objects` data leaf in the `_tiD` documentState blob vs an
 port) returns each verbatim — callers extract bytes per shape (relevant to
 Task 15 `RtiPayloads` / Task 16 `KeyboardController`).
 
+---
+
+### RTI `_tiC` `_tiD` payload builders (Task 15 — verified vs pyatv + `text-set.json`)
+
+`RtiPayloads` (`session/rti/RtiPayloads.kt`) builds the outbound `_tiC`
+`_tiD` blob. **Port target / authority correction (pyatv-wins + captured
+bytes):** the plan referenced a single
+`pyatv/protocols/companion/plist_payloads.py` building a `documentState →
+docSt → contextBeforeInput` graph. **That module and that path do not
+exist.** pyatv's `plist_payloads` is a *package*; the builder is
+`pyatv/protocols/companion/plist_payloads/rti_text_operations.py`
+(`get_rti_clear_text_payload(session_uuid: bytes)` /
+`get_rti_input_text_payload(session_uuid: bytes, text: str)`) — a
+**pre-encoded `RTITextOperations` archive** (`plistlib.dumps(...,
+FMT_BINARY, sort_keys=False)`), exactly the `textOperations` graph the real
+tvOS-26.5 `text-set.json` capture carries. The plan's draft `RtiPayloads.kt`
+(documentState shape, random-UUID default) was discarded — it disagrees with
+both pyatv and the captured bytes; pyatv/captured-bytes win.
+
+Caller flow (pyatv `api.text_input_command`, `companion/api.py`):
+`_text_input_stop` → `_text_input_start`, read `_c._tiD`, extract
+`session_uuid` via `keyed_archiver.read_archive_properties(ti_data,
+["sessionUUID"], ["documentState","docSt","contextBeforeInput"])` (the bare
+16-byte leaf — Task 14 graph above), then `_send_event("_tiC", {"_tiV":1,
+"_tiD": <payload>})`. `text_set` = clear-then-input; `text_clear` = clear;
+`text_append` = input (Task 16 `KeyboardController` owns this orchestration;
+`RtiPayloads` only builds the two blobs, mirroring pyatv's split).
+
+Envelope (both): `$version = 100000`, `$archiver = "RTIKeyedArchiver"`,
+`$top = { textOperations: UID(1) }`. `sessionUuid` is the **raw 16 UUID
+bytes**, re-wrapped here as `NSUUID { NS.uuidbytes, $class }` (pyatv keeps
+the wrapper; does NOT unwrap). Verbatim pyatv `$objects` index layout:
+
+- **`clearText`** (`get_rti_clear_text_payload`):
+  - `[0]="$null"`
+  - `[1]={$class:UID(7), targetSessionUUID:UID(5), keyboardOutput:UID(2),
+    textToAssert:UID(4)}` (RTITextOperations)
+  - `[2]={$class:UID(3)}` (TIKeyboardOutput — **no** insertion)
+  - `[3]={$classname:"TIKeyboardOutput", $classes:["TIKeyboardOutput","NSObject"]}`
+  - `[4]=""` (textToAssert value — empty)
+  - `[5]={NS.uuidbytes:<sessionUuid>, $class:UID(6)}` (NSUUID)
+  - `[6]={$classname:"NSUUID", $classes:["NSUUID","NSObject"]}`
+  - `[7]={$classname:"RTITextOperations", $classes:["RTITextOperations","NSObject"]}`
+- **`inputText`** (`get_rti_input_text_payload`):
+  - `[0]="$null"`
+  - `[1]={keyboardOutput:UID(2), $class:UID(7), targetSessionUUID:UID(5)}`
+    (RTITextOperations — **no** `textToAssert`)
+  - `[2]={insertionText:UID(3), $class:UID(4)}` (TIKeyboardOutput — with insertion)
+  - `[3]=<text>` (insertionText value)
+  - `[4]={$classname:"TIKeyboardOutput", $classes:["TIKeyboardOutput","NSObject"]}`
+  - `[5]={NS.uuidbytes:<sessionUuid>, $class:UID(6)}` (NSUUID)
+  - `[6]={$classname:"NSUUID", $classes:["NSUUID","NSObject"]}`
+  - `[7]={$classname:"RTITextOperations", $classes:["RTITextOperations","NSObject"]}`
+
+**Raw bytes are NOT byte-identical to pyatv/the capture by design.**
+`Plist.write` builds its own identity-deduped `$objects`/string table; tvOS
+(and our `KeyedArchiver`) resolve by `$top`/`CF$UID`, so the *decoded object
+graph* — not the byte layout — is the conformance contract (the plan's own
+comment states this). `RtiPayloadsGoldenTest` decodes our `clearText`/
+`inputText` output with `KeyedArchiver` and asserts equality vs the real
+`text-set.json` clear (`outDecoded()[0]`) / insert (`outDecoded()[1]`) blobs
+on the meaningful fields: `textOperations.textToAssert` (`""` for clear,
+absent for input), `textOperations.keyboardOutput.insertionText`
+(`"HelloWorld"` for input, absent for clear), the `NSUUID{NS.uuidbytes}`
+wrapper (16 bytes == the session id extracted from the capture, fed back in
+for determinism), and the `RTITextOperations`/`NSUUID` `$class` chains. Text
+is written verbatim (ASCII via bplist `0x5n`, non-ASCII via UTF-16 `0x6n`);
+the captured `"HelloWorld"` is ASCII.
+
 `KeyedArchiver.readProperty(blob, *path)` ports the single-path form;
 `readProperties(blob, paths…)` ports pyatv's variadic `(*paths) -> tuple`
 (parses once, independent paths, `null` on miss). Built on `Plist.read`
-(`$objects` ≤ 44 here, well under the documented 255-UID Plist limit).
+(≤ 44 total bplist objects after key/string expansion — 8 logical `$objects`
+entries — well under the documented 255-UID Plist limit).
 
 ---
 
