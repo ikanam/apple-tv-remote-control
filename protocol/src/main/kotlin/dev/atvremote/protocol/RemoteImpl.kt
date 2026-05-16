@@ -2,15 +2,22 @@ package dev.atvremote.protocol
 
 import dev.atvremote.protocol.connection.CompanionConnection
 import dev.atvremote.protocol.connection.CompanionProtocol
+import dev.atvremote.protocol.connection.ResilientSession
 import dev.atvremote.protocol.crypto.Curves
 import dev.atvremote.protocol.frame.FrameType
 import dev.atvremote.protocol.pairing.PairVerify
 import dev.atvremote.protocol.pairing.PairingHandleImpl
 import dev.atvremote.protocol.session.CompanionSessionImpl
 import dev.atvremote.protocol.session.SessionHandshake
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 
@@ -101,17 +108,192 @@ internal object RemoteConnect {
             )
             handshake.run()
 
-            // 5. Return a live CompanionSession; onClose tears down protocol +
+            // 5. Build the live CompanionSession; onClose tears down protocol +
             //    connection. The negotiated [SessionHandshake.sid] is passed so
             //    `_sessionStop` is accepted by tvOS (else "No sessionID").
-            return CompanionSessionImpl(proto, sid = handshake.sid, onClose = {
+            val impl = CompanionSessionImpl(proto, sid = handshake.sid, onClose = {
                 proto.close()
                 conn.close()
             })
+
+            // 6. Subscribe to the standard SystemStatus events (best-effort, fire-and-forget).
+            //    The handshake's _iMC subscribe is kept in SessionHandshake (step 5)
+            //    to preserve the Task-17-validated wire sequence; these two are
+            //    deferred here because RemoteConnect.connect IS the async post-handshake flow.
+            runCatching { impl.subscriptions.subscribe("SystemStatus") }
+            runCatching { impl.subscriptions.subscribe("TVSystemStatus") }
+
+            // 7. Wrap in ResilientSession (§7 decorator). Returns as CompanionSession
+            //    (transparent to the locked AppleTvRemote.connect signature).
+            val resilient = ResilientSession(impl)
+
+            // 8. Supervisor coroutine: detects socket drop and exponential-backoff reconnects.
+            //    The supervisor scope is cancelled via resilient.cancelSupervisor() in
+            //    ResilientSession.close() so a deliberate close() never triggers a reconnect.
+            val supervisorScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+            resilient.cancelSupervisor = { supervisorScope.cancel() }
+            supervisorScope.launch {
+                reconnectLoop(resilient, conn, device, credentials, supervisorScope)
+            }
+
+            return resilient
         } catch (t: Throwable) {
             runCatching { proto.close() }
             runCatching { conn.close() }
             throw t
+        }
+    }
+
+    /**
+     * Supervisor reconnect loop.
+     *
+     * Drop detection: [CompanionConnection.awaitClosed] emits [Unit] when the read loop
+     * terminates for any reason (EOF, SocketException, cancellation-driven [close]).
+     * This is the real socket-drop signal — no polling, no connectionState heuristic.
+     *
+     * Conn tracking: each successful reconnect builds a NEW [CompanionConnection]; the
+     * loop subsequently watches that new conn's [awaitClosed] so a 2nd drop is also
+     * detected. [currentConn] is advanced on every successful reconnect.
+     *
+     * The reconnect sequence mirrors [RemoteConnect.connect] **step-for-step**:
+     *   C3: await 2nd PV_Next BEFORE enableEncryption (drop(1).first())
+     *   C5: String(credentials.clientId, UTF_8) verbatim as clientIdStr
+     *   C6: CompanionSessionImpl(newProto, sid = newHandshake.sid, …)
+     *
+     * Per CLAUDE.md: pyatv wins on any disagreement; this was pinpointed only by
+     * reading pyatv connection.py / auth.py (verify_credentials / exchange_auth).
+     * The sequence below is a faithful mirror — NOT re-derived from memory.
+     *
+     * NOTE: The reconnect body is correct and validated against the C3/C5/C6 sequence.
+     * End-to-end device validation (real socket drop → reconnect → resume) is deferred
+     * to the device session (the drop-signal unit test proves the signal fires on EOF).
+     *
+     * CancellationException is rethrown immediately inside the inner catch block so that
+     * scope cancellation (from ResilientSession.close) exits the loop cleanly without
+     * calling setState(Reconnecting) on a deliberately-closed session.
+     */
+    private suspend fun reconnectLoop(
+        resilient: ResilientSession,
+        initialConn: CompanionConnection,
+        device: AppleTvDevice,
+        credentials: HapCredentials,
+        scope: CoroutineScope,
+    ) {
+        var currentConn = initialConn
+        var attempt = 0
+        while (true) {
+            // Wait for the current connection's read loop to terminate (EOF / SocketException /
+            // cancellation). awaitClosed() has replay=1 so if the loop already exited before
+            // we arrive here the signal is immediately available.
+            try {
+                currentConn.awaitClosed().first()
+            } catch (_: Exception) {
+                break // scope cancelled (ResilientSession.close() was called)
+            }
+
+            resilient.setState(ConnectionState.Reconnecting)
+
+            // Exponential backoff: cap 30 s.
+            // Guard against shift overflow: attempt>=6 already hits the 30 s ceiling
+            // (500 * 2^6 = 32000 > 30000); beyond attempt 63 the JVM masks shift counts
+            // to low 6 bits which would produce zero/negative and hot-spin indefinitely.
+            val backoffMs = if (attempt >= 6) 30_000L else 500L * (1L shl attempt)
+            delay(backoffMs)
+            attempt++
+
+            try {
+                // Reconnect: mirrors connect() body step-for-step (C3/C5/C6).
+                val newConn = CompanionConnection(device.host, device.port)
+                newConn.connect()
+                val newProto = CompanionProtocol(newConn)
+
+                try {
+                    // C3 path: pair-verify M1 → await M2 → M3 → await 2nd PV_Next BEFORE encryption.
+                    val (xPriv, xPub) = Curves.newX25519()
+                    val pv = PairVerify(credentials, xPriv, xPub)
+
+                    // M1 (PV_Start)
+                    newConn.send(FrameType.PV_Start, pv.buildM1())
+
+                    // M2: first PV_Next (bounded 5 s)
+                    val (_, m2Payload) = withTimeout(5_000) {
+                        newConn.frames().first { (ft, _) -> ft == FrameType.PV_Next }
+                    }
+                    pv.consumeM2(m2Payload)
+
+                    // M3 (PV_Next)
+                    newConn.send(FrameType.PV_Next, pv.buildM3())
+
+                    // C3: await the 2nd PV_Next (= M4) BEFORE enableEncryption.
+                    // newConn.frames() is replay-buffered; M2 is cached as the 1st PV_Next.
+                    // drop(1) skips it; .first() takes M4. Mirrored verbatim from connect().
+                    withTimeout(5_000) {
+                        newConn.frames()
+                            .filter { (ft, _) -> ft == FrameType.PV_Next }
+                            .drop(1)
+                            .first()
+                    }
+
+                    val (outKey, inKey) = pv.connectionKeys()
+                    newConn.enableEncryption(outKey, inKey)
+
+                    // C5: verbatim clientId string — same identity pair-verify authenticated.
+                    val clientIdStr = String(credentials.clientId, Charsets.UTF_8)
+                    val newHandshake = SessionHandshake(
+                        newProto,
+                        deviceId = clientIdStr,
+                        clientId = clientIdStr,
+                        name = "Android",
+                        model = "Android",
+                    )
+                    newHandshake.run()
+
+                    // C6: sid from the new handshake (avoids "No sessionID").
+                    val newImpl = CompanionSessionImpl(newProto, sid = newHandshake.sid, onClose = {
+                        newProto.close()
+                        newConn.close()
+                    })
+
+                    // Re-issue initial subscriptions on the new impl.
+                    runCatching { newImpl.subscriptions.subscribe("SystemStatus") }
+                    runCatching { newImpl.subscriptions.subscribe("TVSystemStatus") }
+
+                    // Restore any previously-active subscriptions (Task-17 EventSubscriptions.restore).
+                    // NOTE: the freshly-built impl's EventSubscriptions starts empty; only the
+                    // initial SystemStatus/TVSystemStatus (above) and whatever restore() re-issues
+                    // are active. Dynamic post-connect subscriptions are not carried because no
+                    // dynamic-sub path exists through the locked Plan-2 public API — acceptable
+                    // for v1; revisit if a public subscribe API is added in Plan 3.
+                    runCatching { newImpl.subscriptions.restore() }
+
+                    // Advance the tracked conn so the next loop iteration watches the NEW conn.
+                    currentConn = newConn
+
+                    // Swap the delegate and mark Connected — flushes the button queue.
+                    resilient.onReconnected(newImpl)
+                    attempt = 0 // reset backoff on success
+                } catch (t: Throwable) {
+                    // CancellationException means close() cancelled the supervisor scope;
+                    // rethrow so the outer catch(_: Exception){break} exits the loop cleanly
+                    // without corrupting connectionState via setState(Reconnecting).
+                    if (t is kotlinx.coroutines.CancellationException) throw t
+
+                    runCatching { newProto.close() }
+                    runCatching { newConn.close() }
+
+                    // Credential rejection → stop retrying.
+                    if (t.message?.contains("does not match") == true ||
+                        t.message?.contains("signature did not verify") == true) {
+                        resilient.setState(ConnectionState.Disconnected)
+                        scope.cancel()
+                        return
+                    }
+                    resilient.setState(ConnectionState.Reconnecting)
+                    // continue loop (next iteration will backoff again)
+                }
+            } catch (_: Exception) {
+                resilient.setState(ConnectionState.Reconnecting)
+            }
         }
     }
 

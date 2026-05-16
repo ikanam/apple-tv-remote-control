@@ -17,6 +17,34 @@ import kotlin.test.assertTrue
 class CompanionConnectionTest {
 
     /**
+     * Drop-signal: when the server closes its side of the TCP socket (EOF),
+     * [CompanionConnection.awaitClosed] must emit [Unit] within a bounded timeout.
+     * This is the contract the §7 supervisor relies on to detect a real socket drop
+     * and trigger the reconnect loop.
+     *
+     * Real-clock [runBlocking] + JUnit [@Timeout] because the read loop runs on
+     * real [Dispatchers.IO] (same convention as [readLoopSkipsUndecryptableFrameAndContinues]).
+     */
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    fun awaitClosedEmitsOnServerEof() = runBlocking {
+        val server = ServerSocket(0)
+        val serverJob = launch(Dispatchers.IO) {
+            val s = server.accept()
+            // Immediately close server side → EOF on client read loop.
+            s.close()
+        }
+        val conn = CompanionConnection("127.0.0.1", server.localPort)
+        conn.connect()
+
+        // awaitClosed() must complete once the read loop terminates due to EOF.
+        withTimeout(5_000) { conn.awaitClosed().first() }
+
+        serverJob.join()
+        server.close()
+    }
+
+    /**
      * Robustness regression: a single undecodable/undecryptable inbound frame
      * must NOT kill the read loop. Companion framing is length-prefixed with a
      * plaintext header, so the reader can resync past a bad frame and keep
@@ -83,6 +111,37 @@ class CompanionConnectionTest {
      * suspend indefinitely on a live connection but returns null under withTimeoutOrNull
      * once the loop is dead — virtual-time in runTest advances the 500 ms instantly.
      */
+    /**
+     * Termination-path coverage: deliberate [close] (not server EOF) must also cause
+     * [CompanionConnection.awaitClosed] to emit [Unit]. Exercises the `finally {
+     * _closed.tryEmit(Unit) }` branch driven by cancel/close rather than EOF.
+     *
+     * Real-clock [runBlocking] + JUnit [@Timeout] — same convention as
+     * [awaitClosedEmitsOnServerEof]; the read loop runs on real [Dispatchers.IO].
+     */
+    @Test
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    fun awaitClosedEmitsOnDeliberateClose() = runBlocking {
+        val server = ServerSocket(0)
+        // Accept and hold the connection open — never send data.
+        val serverJob = launch(Dispatchers.IO) {
+            val s = server.accept()
+            try { delay(Long.MAX_VALUE) } finally { s.close() }
+        }
+        val conn = CompanionConnection("127.0.0.1", server.localPort)
+        conn.connect()
+
+        // Deliberately close the connection from the client side.
+        conn.close()
+
+        // awaitClosed() must emit within the timeout, proving the close/cancel path
+        // fires the finally-block signal (not just the EOF path).
+        withTimeout(5_000) { conn.awaitClosed().first() }
+
+        serverJob.cancel()
+        server.close()
+    }
+
     @Test fun closeCancelsReadLoopJob() = runTest {
         val server = ServerSocket(0)
         // Accept and hold the connection open — never send data.
