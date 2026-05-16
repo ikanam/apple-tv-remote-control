@@ -3,6 +3,15 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- Android 14 requires a connectedDevice-qualifying permission to start a
+         FGS of type connectedDevice (ACCESS_NETWORK_STATE / FOREGROUND_SERVICE_*
+         do NOT qualify). CHANGE_NETWORK_STATE is the canonical qualifier;
+         CHANGE_WIFI_MULTICAST_STATE is also functionally required — Companion
+         discovery uses mDNS multicast (jmDNS) on the LAN. Both are normal
+         (install-time, auto-granted) permissions. Without one of these the
+         platform throws SecurityException from startForeground → launch crash. -->
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />

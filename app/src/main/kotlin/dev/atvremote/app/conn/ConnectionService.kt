@@ -38,13 +38,22 @@ class ConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // API-34 typed foreground start (carried-forward Plan-3 T7 review item;
         // triggered now that MainActivity startForegroundService's this).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-            startForeground(
-                1, buildNotification(),
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        } else {
-            startForeground(1, buildNotification())
+        //
+        // Defense-in-depth: the connectedDevice FGS type requires a qualifying
+        // permission on Android 14 (declared in the manifest:
+        // CHANGE_NETWORK_STATE / CHANGE_WIFI_MULTICAST_STATE). runCatching so a
+        // platform/OEM FGS rejection degrades to a plain bound service (the
+        // bound ConnectionManager still works — binding does not depend on the
+        // foreground notification) instead of crashing the app on launch.
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                startForeground(
+                    1, buildNotification(),
+                    android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            } else {
+                startForeground(1, buildNotification())
+            }
         }
         return START_STICKY
     }
