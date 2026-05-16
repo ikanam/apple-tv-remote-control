@@ -111,8 +111,10 @@ authoritative reference).
 Executed code-first (per user decision) via subagent-driven dev with the same
 two-stage review gate + pyatv-wins discipline. **101 tests green** (protocol 92
 + trace-tools 9) from a clean build, reproducibly (verified across multiple
-`clean test` runs). All work committed per-task on `main`, **not yet pushed**
-(origin still at the pre-Plan-2 commit). `Api.kt` Plan-1 surface untouched
+`clean test` runs). All work committed per-task on `main` and **pushed to
+origin** (`8dc354c..aee81a2`, 2026-05-16 — code-first pushed ahead of device
+validation by owner decision; the device session below still gates the
+*feature*, not the push). `Api.kt` Plan-1 surface untouched
 (append/extend only); `PairSetupGoldenTest`/`PairVerifyGoldenTest`/
 `SessionHandshakeTest`/`ButtonTest` byte-identical.
 
@@ -155,8 +157,7 @@ real `_tiD` capture (T14/15). The `connectionState` of a standalone
 wrapping `ResilientSession` (T19, deferred, is the zero-stubs/flows gate).
 
 ## Resume checklist (next session)
-1. `git pull` (Plan-2 work is committed on `main`; **push when ready** — it is
-   currently local-only, gated on the device validation below).
+1. `git pull` (Plan-2 code-first is on `main` @ origin, `aee81a2`).
 2. Set `JAVA_HOME` (Temurin 17 path above). Re-confirm: clean build → **101
    tests green**, `PairSetupGoldenTest` byte-identical.
 3. Re-confirm real device: `scan` → `客厅 … AppleTV14,1 … true`; then
@@ -166,6 +167,6 @@ wrapping `ResilientSession` (T19, deferred, is the zero-stubs/flows gate).
 4. **Plan-2 device session**: follow `docs/PLAN-2-DEVICE-SESSION-RUNBOOK.md`
    — pair pyatv with 客厅 (never done), capture golden traces (T5/14),
    conformance tests (T6/8/10/12-golden/15), `KeyboardController` (T16),
-   zero-stubs/flows gate (T19), CLI + full device smoke (T20). Then push.
+   zero-stubs/flows gate (T19), CLI + full device smoke (T20).
 5. Project memory: `/Users/shinya/.claude/projects/-Users-shinya-Downloads-apple-tv-controller/memory/`
    (`MEMORY.md` index).

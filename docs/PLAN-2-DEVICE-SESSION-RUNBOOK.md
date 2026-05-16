@@ -1,8 +1,8 @@
 # Plan 2 — Device Session Runbook
 
 > Plan 2 was executed **code-first** (per user decision, 2026-05-16). All
-> device-independent code is done, committed per-task on `main` (local, not
-> pushed), **101 tests green** from clean. This runbook is the remaining
+> device-independent code is done, committed per-task on `main` and **pushed
+> to origin** (`aee81a2`), **101 tests green** from clean. This runbook is the remaining
 > device-dependent work. Tasks reference
 > `docs/superpowers/plans/2026-05-15-atv-remote-plan-2-companion-commands.md`.
 > Read the **Protocol-debugging rule** and the **Plan 2 pyatv-wins
@@ -99,5 +99,6 @@ The reconnect supervisor + drop-signal are code-complete and unit-tested but
 
 ## On success
 
-Update `docs/PROTOCOL.md` with any real-tvOS findings, run the full suite,
-then **push `main` to origin** (it has been held local pending this gate).
+Update `docs/PROTOCOL.md` with any real-tvOS findings, run the full suite, and
+push (code-first was already pushed `aee81a2`; push the device-session commits
+once green on real 客厅).
