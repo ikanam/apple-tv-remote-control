@@ -64,4 +64,13 @@ class ResilientSessionTest {
         assertEquals(1, fake.buttons)
         assertTrue(rs.connectionState.value == ConnectionState.Connected)
     }
+
+    @Test fun closeCancelsSupervisor() = runTest {
+        val fake = Fake()
+        val rs = ResilientSession(fake)
+        var cancelled = false
+        rs.cancelSupervisor = { cancelled = true }
+        rs.close()
+        assertTrue(cancelled)
+    }
 }

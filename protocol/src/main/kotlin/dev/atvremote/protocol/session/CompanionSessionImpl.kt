@@ -106,5 +106,12 @@ class CompanionSessionImpl(
     override suspend fun power(on: Boolean) { powerController.power(on) }
     override suspend fun powerStatus(): PowerStatus = powerController.status()
     override suspend fun media(command: MediaCommand) { mediaController.media(command) }
+    /**
+     * Always `Connected` for a standalone impl. The live connection lifecycle is
+     * owned by the wrapping [dev.atvremote.protocol.connection.ResilientSession]
+     * (RemoteConnect.connect always wraps the impl). Do not read this directly
+     * expecting reconnection state — observe the ResilientSession's flow.
+     * (T19 — deferred — is the zero-stubs/flows wiring gate.)
+     */
     override val connectionState = kotlinx.coroutines.flow.MutableStateFlow(ConnectionState.Connected)
 }

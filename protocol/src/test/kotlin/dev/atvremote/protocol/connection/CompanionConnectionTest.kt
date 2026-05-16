@@ -112,9 +112,16 @@ class CompanionConnectionTest {
      * once the loop is dead — virtual-time in runTest advances the 500 ms instantly.
      */
     /**
-     * Termination-path coverage: deliberate [close] (not server EOF) must also cause
-     * [CompanionConnection.awaitClosed] to emit [Unit]. Exercises the `finally {
-     * _closed.tryEmit(Unit) }` branch driven by cancel/close rather than EOF.
+     * Termination-path coverage: deliberate [close] (not server EOF) must cause
+     * [CompanionConnection.awaitClosed] to emit [Unit] deterministically, even when
+     * [close] is called immediately after [connect] with no intervening yield or delay
+     * — which maximises the chance the readLoop coroutine is cancelled before its body
+     * ever starts (the cancel-before-dispatch race that was the pre-fix bug).
+     *
+     * Post-fix: [close] emits `_closed.tryEmit(Unit)` directly, so the signal is
+     * available essentially immediately regardless of dispatch scheduling. The inner
+     * [withTimeout] is 2000 ms (tighter than the @Timeout guard) so a regression of
+     * this specific bug fails fast rather than hanging to the JUnit timeout.
      *
      * Real-clock [runBlocking] + JUnit [@Timeout] — same convention as
      * [awaitClosedEmitsOnServerEof]; the read loop runs on real [Dispatchers.IO].
@@ -130,13 +137,14 @@ class CompanionConnectionTest {
         }
         val conn = CompanionConnection("127.0.0.1", server.localPort)
         conn.connect()
-
-        // Deliberately close the connection from the client side.
+        // Call close() IMMEDIATELY with no yield/delay — this is the exact race
+        // condition of the pre-fix bug: readLoop may not have been dispatched yet,
+        // so its try/finally would never run without the direct emit in close().
         conn.close()
 
-        // awaitClosed() must emit within the timeout, proving the close/cancel path
-        // fires the finally-block signal (not just the EOF path).
-        withTimeout(5_000) { conn.awaitClosed().first() }
+        // Must complete deterministically post-fix. 2000 ms inner bound: if this
+        // regresses, the test fails quickly rather than hanging to the JUnit @Timeout.
+        withTimeout(2_000) { conn.awaitClosed().first() }
 
         serverJob.cancel()
         server.close()

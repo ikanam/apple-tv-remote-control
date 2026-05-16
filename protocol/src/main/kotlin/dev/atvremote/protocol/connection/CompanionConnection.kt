@@ -42,9 +42,19 @@ class CompanionConnection(private val host: String, private val port: Int) : Fra
     override fun frames(): SharedFlow<Pair<FrameType, ByteArray>> = _frames
 
     /**
-     * Returns a [SharedFlow] that emits [Unit] exactly once when the read loop terminates
-     * for any reason (EOF, SocketException, cancellation-driven [close], or any other
-     * exception). [replay] = 1 so a late subscriber immediately sees the signal.
+     * Returns a [SharedFlow] that emits [Unit] exactly once when this connection is closed.
+     * [replay] = 1 so a late subscriber immediately sees the signal.
+     *
+     * The signal is guaranteed on **both** termination paths:
+     * - Deliberate [close] call: emitted directly inside [close] (handles the
+     *   cancel-before-dispatch race where the readLoop coroutine is cancelled before its
+     *   body ever starts, so its `finally` would never run).
+     * - Peer-initiated drop (EOF / SocketException) without a [close] call: emitted by
+     *   the `finally` block in the read loop.
+     *
+     * A double `tryEmit` (both paths in the same lifetime) is harmless — `_closed` has
+     * `replay = 1` and both emissions carry the same `Unit` value.
+     *
      * The §7 supervisor uses this as the real socket-drop signal to trigger reconnect.
      */
     fun awaitClosed(): SharedFlow<Unit> = _closed.asSharedFlow()
@@ -68,12 +78,25 @@ class CompanionConnection(private val host: String, private val port: Int) : Fra
         cipher = ChaCha(outKey, inKey)
     }
 
-    /** Cancels the read loop and closes the socket. */
+    /**
+     * Cancels the read loop, closes the socket, and emits the close signal on
+     * [awaitClosed]. The explicit [_closed.tryEmit] here is necessary to handle the
+     * cancel-before-dispatch race: if [scope.cancel] fires before the readLoop coroutine
+     * is dispatched, its `try/finally` never executes and the signal would never arrive
+     * without this emit. The [readLoop] `finally` remains unchanged and covers the
+     * peer-initiated drop path (EOF / SocketException when [close] is not called).
+     */
     suspend fun close() {
         scope.cancel()
         withContext(Dispatchers.IO) {
             runCatching { socket.close() }
         }
+        // Emit the close signal directly from close() so awaitClosed() is always
+        // honoured — even if readLoop was cancelled before its body started (the
+        // cancel-before-dispatch race that causes awaitClosedEmitsOnDeliberateClose to
+        // hang). _closed has replay=1 so a double emit (this + readLoop finally) is
+        // idempotent and harmless.
+        _closed.tryEmit(Unit)
     }
 
     // ---- private ----
