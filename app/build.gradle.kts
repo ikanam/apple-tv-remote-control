@@ -44,7 +44,21 @@ dependencies {
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons)
     implementation(libs.androidx.datastore.preferences)
-    testImplementation(kotlin("test"))
+    // DURABLE :app-wide decision (Plan-3 T4) — do NOT revert per-task: kotlin.test
+    // must bind the JUnit4 backend so kotlin.test.Test == org.junit.Test; Robolectric's
+    // @RunWith(RobolectricTestRunner) is a JUnit4 runner (bare kotlin("test") resolves to
+    // kotlin-test-junit5 and silently runs Robolectric methods OUTSIDE the sandbox).
+    // This underpins ALL :app Robolectric tests across the remaining 9 Plan-3 tasks.
+    //
+    // kotlin.test must bind to the JUnit4 backend so kotlin.test.Test maps to
+    // org.junit.Test: Robolectric's @RunWith(RobolectricTestRunner) is a JUnit4
+    // runner and only discovers JUnit4 @Test methods. The bare kotlin("test")
+    // transitively resolves to kotlin-test-junit5 (junit-jupiter is on the
+    // classpath via junit-vintage-engine), which would (a) make Robolectric see
+    // "no runnable methods" and (b) let the Jupiter engine run the methods
+    // OUTSIDE the Robolectric sandbox. junit-vintage-engine then bridges the
+    // JUnit4 classes (plain or @RunWith) into useJUnitPlatform(). See Task-4.
+    testImplementation(kotlin("test-junit"))
     testImplementation(libs.coroutines.test)
     testImplementation(libs.robolectric)
     testImplementation(libs.androidx.test.core)
