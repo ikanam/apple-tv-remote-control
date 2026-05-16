@@ -9,6 +9,7 @@ class FakeSession : CompanionSession {
     val touches = mutableListOf<Triple<Int, Int, TouchPhase>>()
     val clicks = mutableListOf<InputAction>()
     val medias = mutableListOf<MediaCommand>()
+    val powerCalls = mutableListOf<Boolean>()
     var text: String = ""
     var launched: String? = null
     var poweredOn: Boolean? = null
@@ -27,7 +28,7 @@ class FakeSession : CompanionSession {
     override val keyboardFocus: StateFlow<KeyboardFocusState> = focusFlow
     override suspend fun listApps(): List<InstalledApp> = apps
     override suspend fun launchApp(bundleId: String) { launched = bundleId }
-    override suspend fun power(on: Boolean) { poweredOn = on }
+    override suspend fun power(on: Boolean) { poweredOn = on; powerCalls += on }
     override suspend fun powerStatus(): PowerStatus =
         when (poweredOn) { true -> PowerStatus.On; false -> PowerStatus.Off; null -> PowerStatus.Unknown }
     override suspend fun media(command: MediaCommand) { medias += command }
