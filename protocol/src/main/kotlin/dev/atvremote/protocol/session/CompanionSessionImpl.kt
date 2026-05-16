@@ -72,6 +72,7 @@ class CompanionSessionImpl(
 
     private val touchTransport by lazy { TouchTransport(channel) }
     private val hidCommands by lazy { HidCommands(channel) }
+    private val appsController by lazy { AppsController(channel) }
 
     override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
         touchTransport.touch(x, y, phase)
@@ -83,8 +84,9 @@ class CompanionSessionImpl(
     override suspend fun textClear(): Unit = throw NotImplementedError()
     override suspend fun textAppend(text: String): Unit = throw NotImplementedError()
     override val keyboardFocus = kotlinx.coroutines.flow.MutableStateFlow(KeyboardFocusState.Unfocused)
-    override suspend fun listApps(): List<InstalledApp> = throw NotImplementedError()
-    override suspend fun launchApp(bundleId: String): Unit = throw NotImplementedError()
+    override suspend fun listApps(): List<InstalledApp> = appsController.listApps()
+    // `bundleId` may also be a URL/scheme — AppsController.launch picks _bundleID vs _urlS
+    override suspend fun launchApp(bundleId: String) { appsController.launch(bundleId) }
     override suspend fun power(on: Boolean): Unit = throw NotImplementedError()
     override suspend fun powerStatus(): PowerStatus = throw NotImplementedError()
     override suspend fun media(command: MediaCommand): Unit = throw NotImplementedError()
