@@ -23,11 +23,17 @@ class FakeProtocol : SessionChannel {
         replay = 1, extraBufferCapacity = 64)
     override val events: SharedFlow<Pair<String, Map<String, Any?>>> = _events.asSharedFlow()
 
+    /** Every exchange()/sendEvent() call in invocation order: (name to content).
+     *  Needed because _hidT is sendEvent (separate list from exchange's) yet
+     *  click/swipe sequences interleave _hidC (exchange) and _hidT (sendEvent).
+     *  Prefer `exchanges`/`sentEvents` for single-frame targeted assertions; use `calls` when the assertion requires ordering across both exchange and sendEvent call sites. */
+    val calls = mutableListOf<Pair<String, Map<String, Any?>>>()
+
     override suspend fun exchange(name: String, content: Map<String, Any?>): Map<String, Any?> {
-        exchanges.add(name to content); return onExchange(name, content)
+        exchanges.add(name to content); calls.add(name to content); return onExchange(name, content)
     }
     override suspend fun sendEvent(name: String, content: Map<String, Any?>) {
-        sentEvents.add(name to content)
+        sentEvents.add(name to content); calls.add(name to content)
     }
     suspend fun emitEvent(name: String, content: Map<String, Any?>) { _events.emit(name to content) }
 }

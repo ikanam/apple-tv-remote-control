@@ -11,7 +11,7 @@ class TouchTransportTest {
         val fake = FakeProtocol()
         val t = TouchTransport(fake) { 0L }   // injected clock = 0ns
         t.touch(-50, 5000, TouchPhase.Press)
-        val (name, c) = fake.exchanges.last()
+        val (name, c) = fake.sentEvents.last()
         assertEquals("_hidT", name)
         assertEquals(0, c["_cx"])              // -50 clamped to 0
         assertEquals(1000, c["_cy"])           // 5000 clamped to 1000
@@ -31,7 +31,7 @@ class TouchTransportTest {
         assertEquals(0, fake.exchanges.last().second["_tFl"])
         now = 5_016_000L
         t.touch(10, 20, TouchPhase.Hold)
-        assertEquals(16_000L, fake.exchanges.last().second["_ns"]) // ns since start
+        assertEquals(16_000L, fake.sentEvents.last().second["_ns"]) // ns since start
     }
 
     @Test fun stopSendsTouchStop() = runTest {
@@ -47,15 +47,18 @@ class TouchTransportTest {
         var now = 0L
         val t = TouchTransport(fake) { now }
         t.swipe(0, 0, 100, 0, steps = 4) { now += 16_000_000L } // sleep advances clock
-        val phases = fake.exchanges.filter { it.first == "_hidT" }.map { it.second["_tPh"] }
+        // _hidT frames now arrive via sendEvent; use the ordered calls log which
+        // captures both exchange() (_touchStart/_touchStop) and sendEvent() (_hidT)
+        val phases = fake.calls.filter { it.first == "_hidT" }.map { it.second["_tPh"] }
         assertEquals(TouchPhase.Press.value, phases.first())
         assertEquals(TouchPhase.Release.value, phases.last())
         assertTrue(phases.drop(1).dropLast(1).all { it == TouchPhase.Hold.value })
-        // start frame present before the first _hidT
-        assertEquals("_touchStart", fake.exchanges.first().first)
+        // start frame present before the first _hidT in the ordered log
+        assertEquals("_touchStart", fake.calls.first().first)
         // x interpolated 0..100 across the steps
-        val xs = fake.exchanges.filter { it.first == "_hidT" }.map { it.second["_cx"] as Int }
+        val xs = fake.calls.filter { it.first == "_hidT" }.map { it.second["_cx"] as Int }
         assertEquals(0, xs.first()); assertEquals(100, xs.last())
         assertTrue(xs.zipWithNext().all { (a, b) -> b >= a })
+        assertEquals("_touchStop", fake.calls.last().first)
     }
 }

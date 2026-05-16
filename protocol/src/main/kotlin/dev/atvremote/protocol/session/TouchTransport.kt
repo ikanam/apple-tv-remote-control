@@ -8,8 +8,11 @@ import dev.atvremote.protocol.connection.CommandChannel
  *
  * Wire (source-verified against pyatv/protocols/companion/api.py):
  *   _touchStart content { "_height":1000.0, "_tFl":0, "_width":1000.0 }  (resets base ts)
+ *               → `_touch_start` (L447) → `_send_command` (L450) → exchange (_t=2, awaits reply)
  *   _hidT       content { "_ns":<ns since start>, "_tFg":1, "_cx":x, "_cy":y, "_tPh":phase }
+ *               → `hid_event` (L294) → `_send_event` (L300) → sendEvent (_t=1, fire-and-forget)
  *   _touchStop  content { "_i":1 }
+ *               → `_touch_stop` (L456) → `_send_command` (L458) → exchange (_t=2, awaits reply)
  * x,y clamped to [0,1000]; ~16ms step interval for swipes.
  *
  * Note: pyatv's swipe() is time-duration-based (while current_time < end_time).
@@ -35,7 +38,7 @@ internal class TouchTransport(
 
     suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
         val ns = nanoClock() - baseNs
-        ch.exchange(
+        ch.sendEvent(
             "_hidT",
             mapOf(
                 "_ns" to ns,

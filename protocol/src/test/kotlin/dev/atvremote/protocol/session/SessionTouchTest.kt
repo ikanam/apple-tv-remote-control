@@ -10,7 +10,7 @@ class SessionTouchTest {
         val fake = FakeProtocol()
         val s = CompanionSessionImpl(fake)
         s.touch(2000, -1, TouchPhase.Press)
-        val (name, c) = fake.exchanges.last()
+        val (name, c) = fake.sentEvents.last()
         assertEquals("_hidT", name)
         assertEquals(1000, c["_cx"])   // clamped high
         assertEquals(0, c["_cy"])      // clamped low

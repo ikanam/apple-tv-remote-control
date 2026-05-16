@@ -17,6 +17,8 @@ import kotlin.test.assertEquals
  *    press + 20ms + release + ClickTouch. DoubleTap yields 2 ClickTouches.
  *  - Hold: pyatv DOES send a trailing ClickTouch (plan incorrectly said
  *    "no trailing Click touch").
+ *  - _hidT is sendEvent (fire-and-forget, _t=1); press/release are exchange
+ *    (_hidC, _t=2). Use the ordered fake.calls log to check interleaved sequences.
  *
  * HID values confirmed from pyatv:
  *   Select=6, Sleep=12, Wake=13 (api.py lines 43/49/50)
@@ -24,17 +26,20 @@ import kotlin.test.assertEquals
  *   TouchPhase.Click.value = 5 (Api.kt, sourced from pyatv const.py line 466)
  */
 class HidClickTest {
-    private fun seq(ex: List<Pair<String, Map<String, Any?>>>) =
-        ex.map { it.first to (it.second["_hBtS"] ?: it.second["_tPh"]) }
+    /** Map the ordered combined call log to (name → discriminator) pairs for sequence assertions. */
+    private fun seq(calls: List<Pair<String, Map<String, Any?>>>) =
+        calls.map { it.first to (it.second["_hBtS"] ?: it.second["_tPh"]) }
 
     @Test fun singleTapIsPressReleaseThenClickTouch() = runTest {
         val fake = FakeProtocol()
         val h = HidCommands(fake) {}   // no-op delay
         h.click(InputAction.SingleTap)
         // pyatv api.py line 362-369: count=1, loop: press + 20ms + release + hid_event(Click)
+        // _hidC (press/release) land in exchanges; _hidT (ClickTouch) lands in sentEvents.
+        // fake.calls captures both in invocation order.
         assertEquals(
             listOf("_hidC" to 1, "_hidC" to 2, "_hidT" to TouchPhase.Click.value),
-            seq(fake.exchanges),
+            seq(fake.calls),
         )
         assertEquals(6, fake.exchanges[0].second["_hidC"]) // HidCommand.Select
         assertEquals(6, fake.exchanges[1].second["_hidC"])
@@ -53,7 +58,7 @@ class HidClickTest {
                 "_hidC" to 1, "_hidC" to 2, "_hidT" to TouchPhase.Click.value,
                 "_hidC" to 1, "_hidC" to 2, "_hidT" to TouchPhase.Click.value,
             ),
-            seq(fake.exchanges),
+            seq(fake.calls),
         )
     }
 
@@ -66,8 +71,22 @@ class HidClickTest {
         // (plan incorrectly said "no trailing Click touch"; pyatv wins)
         assertEquals(
             listOf("_hidC" to 1, "_hidC" to 2, "_hidT" to TouchPhase.Click.value),
-            seq(fake.exchanges),
+            seq(fake.calls),
         )
         assertEquals(1000L, slept) // ~1s hold
+    }
+
+    @Test fun clickTouchNsIsLiveClockValue() = runTest {
+        // Verifies that _ns in the clickTouch _hidT frame is the injected nanoClock()
+        // value, not the constant 0L that the plan erroneously specified.
+        val fake = FakeProtocol()
+        val h = HidCommands(fake, nanoClock = { 12345L }) {}
+        h.click(InputAction.SingleTap)
+        val hidTEvent = fake.sentEvents.last()
+        assertEquals("_hidT", hidTEvent.first)
+        assertEquals(12345L, hidTEvent.second["_ns"])
+        assertEquals(1000, hidTEvent.second["_cx"])
+        assertEquals(1000, hidTEvent.second["_cy"])
+        assertEquals(TouchPhase.Click.value, hidTEvent.second["_tPh"])
     }
 }
