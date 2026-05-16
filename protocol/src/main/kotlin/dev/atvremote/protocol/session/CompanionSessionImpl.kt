@@ -76,6 +76,20 @@ class CompanionSessionImpl(
     private val powerController by lazy { PowerController(channel) }
     private val mediaController by lazy { MediaController(channel) }
 
+    /**
+     * Event subscription manager (pyatv `_interest`).
+     * Tracks the active subscription set so Task 18's reconnect supervisor can
+     * call [EventSubscriptions.restore] to re-register all subscriptions after
+     * a reconnect without the caller needing to know the set.
+     *
+     * After connect, the caller should subscribe to the events it needs:
+     *   subscriptions.subscribe("SystemStatus")
+     *   subscriptions.subscribe("TVSystemStatus")
+     * The handshake's `_iMC` subscribe is handled directly in [SessionHandshake]
+     * (step 5) and kept there to preserve the Task-17-validated wire sequence.
+     */
+    internal val subscriptions by lazy { EventSubscriptions(channel) }
+
     override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
         touchTransport.touch(x, y, phase)
     }
