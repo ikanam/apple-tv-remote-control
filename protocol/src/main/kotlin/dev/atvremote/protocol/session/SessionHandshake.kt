@@ -42,9 +42,21 @@ class SessionHandshake(
     private val name: String,
     private val model: String,
     private val sidGenerator: () -> Long = { kotlin.random.Random.nextLong(0, 1L shl 32) },
+    private val nanoClock: () -> Long = { System.nanoTime() },
 ) {
     /** Combined session ID after [run] completes: `(remoteSid shl 32) or localSid`. */
     var sid: Long = 0L
+        private set
+
+    /**
+     * Base timestamp captured at the moment the `_touchStart` frame is sent (step 2 of [run]).
+     * Mirrors pyatv `_touch_start` (api.py L449): `self._base_timestamp = time.time_ns()`.
+     * This value must be threaded into [TouchTransport] so that every `_hidT` `_ns` field is
+     * session-relative (`nanoClock() - touchBaseNs`) rather than a raw `System.nanoTime()`.
+     *
+     * Only valid after [run] completes.
+     */
+    var touchBaseNs: Long = 0L
         private set
 
     private var ran = false
@@ -80,6 +92,10 @@ class SessionHandshake(
         )
 
         // 2. Register a 1000×1000 virtual touch surface.
+        // Capture the base timestamp immediately before sending _touchStart — mirrors pyatv
+        // _touch_start (api.py L449): `self._base_timestamp = time.time_ns()` runs first,
+        // then _send_command("_touchStart", …) (L450). This is purely additive (no wire change).
+        touchBaseNs = nanoClock()
         proto.exchange(
             "_touchStart",
             mapOf(

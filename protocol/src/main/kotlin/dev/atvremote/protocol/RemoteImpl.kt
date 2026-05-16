@@ -111,7 +111,8 @@ internal object RemoteConnect {
             // 5. Build the live CompanionSession; onClose tears down protocol +
             //    connection. The negotiated [SessionHandshake.sid] is passed so
             //    `_sessionStop` is accepted by tvOS (else "No sessionID").
-            val impl = CompanionSessionImpl(proto, sid = handshake.sid, onClose = {
+            val impl = CompanionSessionImpl(proto, sid = handshake.sid,
+                touchBaseNs = handshake.touchBaseNs, onClose = {
                 proto.close()
                 conn.close()
             })
@@ -248,8 +249,9 @@ internal object RemoteConnect {
                     )
                     newHandshake.run()
 
-                    // C6: sid from the new handshake (avoids "No sessionID").
-                    val newImpl = CompanionSessionImpl(newProto, sid = newHandshake.sid, onClose = {
+                    // C6: sid + touchBaseNs from the new handshake.
+                    val newImpl = CompanionSessionImpl(newProto, sid = newHandshake.sid,
+                        touchBaseNs = newHandshake.touchBaseNs, onClose = {
                         newProto.close()
                         newConn.close()
                     })

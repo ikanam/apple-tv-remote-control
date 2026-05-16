@@ -24,16 +24,26 @@ import dev.atvremote.protocol.connection.CommandChannel
  * NOTE: End-to-end correctness of the real connect path is deferred to Task 17
  * (CLI smoke test against a real Apple TV device).
  *
- * @param channel  the command channel used to send button and session events.
- * @param sid      the combined session id negotiated by `_sessionStart`
- *                 (`(remoteSid shl 32) or localSid`). Sent in `_sessionStop`;
- *                 real tvOS rejects `_sessionStop` with "No sessionID" without
- *                 it. Defaults to 0 for test doubles / no-handshake usage.
- * @param onClose  optional teardown hook; called once when [close] is invoked.
+ * @param channel       the command channel used to send button and session events.
+ * @param sid           the combined session id negotiated by `_sessionStart`
+ *                      (`(remoteSid shl 32) or localSid`). Sent in `_sessionStop`;
+ *                      real tvOS rejects `_sessionStop` with "No sessionID" without
+ *                      it. Defaults to 0 for test doubles / no-handshake usage.
+ * @param touchBaseNs   the connect-time `_touchStart` instant (from
+ *                      [SessionHandshake.touchBaseNs]). Used as the `_ns` base in
+ *                      every `_hidT` frame so touch timestamps are session-relative,
+ *                      matching pyatv `hid_event` (api.py L303:
+ *                      `_ns = time.time_ns() - self._base_timestamp`).
+ *                      Defaults to 0 for test doubles that do not inject a base.
+ * @param nanoClock     monotonic clock source for touch `_ns` computation; injected
+ *                      for deterministic testing. Defaults to [System.nanoTime].
+ * @param onClose       optional teardown hook; called once when [close] is invoked.
  */
 class CompanionSessionImpl(
     private val channel: CommandChannel,
     private val sid: Long = 0L,
+    private val touchBaseNs: Long = 0L,
+    private val nanoClock: () -> Long = { System.nanoTime() },
     private val onClose: suspend () -> Unit = {},
 ) : CompanionSession {
 
@@ -70,7 +80,7 @@ class CompanionSessionImpl(
 
     // ---- Plan-2 stubs (replaced with real bodies in later tasks) ----
 
-    private val touchTransport by lazy { TouchTransport(channel) }
+    private val touchTransport by lazy { TouchTransport(channel, baseNs = touchBaseNs, nanoClock = nanoClock) }
     private val hidCommands by lazy { HidCommands(channel) }
     private val appsController by lazy { AppsController(channel) }
     private val powerController by lazy { PowerController(channel) }
