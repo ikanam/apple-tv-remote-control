@@ -70,7 +70,11 @@ class CompanionSessionImpl(
 
     // ---- Plan-2 stubs (replaced with real bodies in later tasks) ----
 
-    override suspend fun touch(x: Int, y: Int, phase: TouchPhase): Unit = throw NotImplementedError()
+    private val touchTransport by lazy { TouchTransport(channel) }
+
+    override suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
+        touchTransport.touch(x, y, phase)
+    }
     override suspend fun click(action: InputAction): Unit = throw NotImplementedError()
     override suspend fun textGet(): String = throw NotImplementedError()
     override suspend fun textSet(text: String): Unit = throw NotImplementedError()
