@@ -71,13 +71,27 @@ class CompanionSessionImpl(
 
     /**
      * Sends a best-effort `_sessionStop` (with the negotiated [sid], matching
-     * pyatv `_session_stop`) then invokes the [onClose] teardown.
+     * pyatv `_session_stop`) then `_touchStop {"_i":1}` (pyatv `_touch_stop`,
+     * api.py:456-458), then invokes the [onClose] teardown.
+     *
+     * Order matches pyatv `disconnect()` (api.py:120-122):
+     *   1. `_session_stop()` → `_sessionStop { _srvT, _sid }`
+     *   2. `_touch_stop()`   → `_touchStop   { _i: 1 }`
+     * Both are best-effort (pyatv wraps both in a single try/except; we use
+     * separate `runCatching` blocks so a failing `_sessionStop` does not
+     * prevent `_touchStop`, and neither prevents `onClose`).
      */
     override suspend fun close() {
         runCatching {
             channel.exchange(
                 "_sessionStop",
                 mapOf("_srvT" to "com.apple.tvremoteservices", "_sid" to sid),
+            )
+        }
+        runCatching {
+            channel.exchange(
+                "_touchStop",
+                mapOf("_i" to 1),
             )
         }
         onClose()
