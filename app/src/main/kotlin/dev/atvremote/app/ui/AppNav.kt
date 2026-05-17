@@ -11,8 +11,8 @@ import androidx.compose.runtime.setValue
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
 import dev.atvremote.app.ui.devices.DevicesScreen
-import dev.atvremote.app.ui.hero.HeroScreen
 import dev.atvremote.app.ui.keyboard.KeyboardScreen
+import dev.atvremote.app.ui.remote.RemoteScreen
 import dev.atvremote.app.ui.pair.PairScreen
 import dev.atvremote.app.ui.theme.AtvRemoteTheme
 import dev.atvremote.app.vm.DiscoveredDevice
@@ -137,17 +137,21 @@ fun AppNav(
         }
 
         when (dest) {
-            AppDestinations.HERO -> HeroScreen(
-                vm = remoteVm,
-                onOpenKeyboard = { dest = AppDestinations.KEYBOARD },
+            // T3: HeroScreen (+ Trackpad/DpadRow/ButtonRow) is replaced by the
+            // Claude-Design RemoteScreen. KeyboardOverlay is now an in-screen
+            // overlay (driven by keyboardVm + the gated Keyboard button), NOT a
+            // separate KEYBOARD destination, so onOpenKeyboard/onOpenMore are
+            // gone. This is the ONLY AppNav branch T3 touches — the full nav
+            // restructure (AppDestinations/initialDestination/MainActivity) is
+            // T5's job; the enum/other branches stay unchanged here.
+            AppDestinations.HERO -> RemoteScreen(
+                remoteVm = remoteVm,
+                keyboardVm = keyboardVm,
+                deviceName = deviceName,
+                onSwitchDevice = { dest = AppDestinations.DEVICES },
+                tuning = dev.atvremote.app.swipe.SwipeTuning.DEFAULT,
                 haptics = haptics,
                 keyboardProbe = keyboardProbe,
-                deviceName = deviceName,
-                onOpenDevices = { dest = AppDestinations.DEVICES },
-                // base T15 routed Hero's menu -> Dest.Launcher; the launcher is
-                // removed (Amendment A2) -> "More" opens Tuning, the only
-                // remaining settings/debug-like destination among the 5.
-                onOpenMore = { dest = AppDestinations.TUNING },
                 connectionBanner = banner,
             )
             AppDestinations.DEVICES -> {

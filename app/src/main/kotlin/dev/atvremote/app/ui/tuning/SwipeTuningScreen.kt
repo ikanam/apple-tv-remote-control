@@ -16,7 +16,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.swipe.TouchEvent
-import dev.atvremote.app.ui.hero.Trackpad
+import dev.atvremote.app.ui.remote.Touchpad
 
 /** Debug A/B tuning harness (spec §5/§8). */
 @Composable
@@ -38,9 +38,16 @@ fun SwipeTuningScreen() {
         Slider(value = exponent, onValueChange = { exponent = it }, valueRange = 0.5f..3f)
         Text("inertiaDecay ${"%.2f".format(decay)}")
         Slider(value = decay, onValueChange = { decay = it }, valueRange = 0.5f..0.99f)
-        Trackpad(
+        // T3: the old `Trackpad` was deleted with HeroScreen; this debug
+        // harness now uses the T2 [Touchpad]. Discrete tap-zone directions and
+        // SwipeEngine drag events are both logged (the final Tuning wiring is
+        // T5's concern — this is the minimal compile-keeping swap).
+        Touchpad(
             tuning = tuning,
-            onEvent = { e -> log.value = (log.value + e).takeLast(50) },
+            onDirection = { btn ->
+                log.value = (log.value + TouchEvent.DirectionalStep(btn)).takeLast(50)
+            },
+            onTouchEvent = { e -> log.value = (log.value + e).takeLast(50) },
         )
         Text("Emitted events: ${log.value.size}")
         log.value.takeLast(8).forEach { Text(it.toString()) }
