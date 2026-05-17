@@ -5,13 +5,16 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performTouchInput
 import dev.atvremote.app.testutil.FakeSession
 import dev.atvremote.app.vm.KeyboardViewModel
 import dev.atvremote.app.vm.RemoteViewModel
+import dev.atvremote.protocol.KeyboardFocusState
 import dev.atvremote.protocol.RemoteButton
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.resetMain
@@ -50,6 +53,11 @@ class RemoteScreenUiTest {
     )
 
     private fun keyboardVm() = KeyboardViewModel { null }
+
+    // Same construction KeyboardViewModelTest uses (KeyboardViewModel { s }):
+    // the VM collects session.keyboardFocus, so driving session.focusFlow ==
+    // the ATV focusing a text field. The VMs are logic-locked — not modified.
+    private fun keyboardVm(session: FakeSession) = KeyboardViewModel { session }
 
     @Test fun showsTouchpadSixControlsAndDeviceChipNoDpadNoMuteSiriApps() {
         val session = FakeSession()
@@ -152,9 +160,15 @@ class RemoteScreenUiTest {
                 onSwitchDevice = {},
             )
         }
+        // tap → wake (RemoteViewModel.wake → power(true)).
         rule.onNodeWithContentDescription("Power").performClick()
         rule.waitForIdle()
         assertEquals(listOf(true), session.powerCalls)
+        // long-press → sleep (RemoteViewModel.sleep → power(false)). The spec
+        // REQUIRES both halves of the power gesture; lock the sleep path too.
+        rule.onNodeWithContentDescription("Power").performTouchInput { longClick() }
+        rule.waitForIdle()
+        assertEquals(listOf(true, false), session.powerCalls)
     }
 
     @Test fun keyboardDisabledWhenProbeUnavailableNoOverlay() {
@@ -190,5 +204,45 @@ class RemoteScreenUiTest {
         rule.waitForIdle()
         // overlay covers the screen ⇒ its field is on-screen (not in the scroll).
         rule.onNodeWithContentDescription("TV text field").assertIsDisplayed()
+    }
+
+    // Locks the real kb.visible OR-branch (overlayVisible = localKbOpen ||
+    // kb.visible): with a NotImplementedError probe the local toggle can NEVER
+    // open it, so the overlay appearing proves it was driven purely by the ATV
+    // focusing a field (KeyboardViewModel.state.visible) — and that 完成
+    // (which only clears the local toggle) does NOT hide it while the ATV
+    // still has focus (we do not fight the VM).
+    @Test fun atvFocusAutoShowsOverlayAndLocalCloseDoesNotFightVm() {
+        val session = FakeSession()
+        rule.setContent {
+            RemoteScreen(
+                remoteVm = fakeRemoteVm(session),
+                keyboardVm = keyboardVm(session),
+                deviceName = "Living Room",
+                onSwitchDevice = {},
+                // stub probe ⇒ keyboardAvailable == false ⇒ localKbOpen path
+                // is unreachable; only kb.visible can show the overlay.
+                keyboardProbe = { throw NotImplementedError("stub") },
+            )
+        }
+        rule.waitForIdle()
+        // not focused yet ⇒ no overlay.
+        rule.onAllNodesWithContentDescription("TV text field").assertCountEquals(0)
+
+        // ATV focuses a text field (same hook KeyboardViewModelTest drives).
+        session.focusFlow.value = KeyboardFocusState.Focused
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription("TV text field").assertIsDisplayed()
+
+        // 完成 clears only the local toggle; kb.visible is still true so the
+        // overlay must stay.
+        rule.onNodeWithText("完成").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithContentDescription("TV text field").assertIsDisplayed()
+
+        // ATV unfocuses ⇒ kb.visible false, local toggle never set ⇒ gone.
+        session.focusFlow.value = KeyboardFocusState.Unfocused
+        rule.waitForIdle()
+        rule.onAllNodesWithContentDescription("TV text field").assertCountEquals(0)
     }
 }

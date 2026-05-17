@@ -3,7 +3,6 @@ package dev.atvremote.app.ui.remote
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -18,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -128,7 +128,7 @@ fun RemoteScreen(
                 Row(
                     modifier = Modifier
                         .align(Alignment.Center)
-                        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(8.dp))
                         .clickable(role = Role.Button, onClick = onSwitchDevice)
                         .padding(horizontal = 10.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -156,6 +156,10 @@ fun RemoteScreen(
                         .size(32.dp)
                         .clip(CircleShape)
                         .background(DesignTokens.ControlSurface06)
+                        // pointerInput(Unit) captures remoteVm/haptics for the
+                        // gesture coroutine's life (no rememberUpdatedState):
+                        // safe ONLY because AppNav/MainActivity pass stable
+                        // hoisted (not per-recomposition) VM/haptics singletons.
                         .pointerInput(Unit) {
                             detectTapGestures(
                                 onTap = { remoteVm.wake(); haptics?.tap() },
