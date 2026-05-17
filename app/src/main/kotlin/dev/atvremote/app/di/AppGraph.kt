@@ -3,6 +3,7 @@ package dev.atvremote.app.di
 import android.content.Context
 import dev.atvremote.app.conn.ConnectionManager
 import dev.atvremote.app.conn.MulticastLockHolder
+import dev.atvremote.app.conn.WifiStatus
 import dev.atvremote.app.data.CredentialStore
 import dev.atvremote.app.haptics.Haptics
 
@@ -22,11 +23,16 @@ import dev.atvremote.app.haptics.Haptics
  * `remote=`/`AppleTvRemote` ctor param.
  *
  * multicastLock (S2) is lazy so no WifiManager access at app-start; S5 acquires
- * it only while the Devices screen is active.
+ * it only while the Connect screen is active.
+ *
+ * wifiStatus is the read-only Wi-Fi info holder (SSID/local IPv4) for the
+ * ConnectScreen status pill (T5). Lazy for the same reason as multicastLock —
+ * no WifiManager access at app-start; it is queried only when CONNECT renders.
  */
 class AppGraph(appContext: Context) {
     val credentialStore by lazy { CredentialStore(appContext) }
     val haptics = Haptics(appContext)
     val connectionManager by lazy { ConnectionManager(credentialStore = credentialStore) }
     val multicastLock by lazy { MulticastLockHolder(appContext) }
+    val wifiStatus by lazy { WifiStatus(appContext) }
 }

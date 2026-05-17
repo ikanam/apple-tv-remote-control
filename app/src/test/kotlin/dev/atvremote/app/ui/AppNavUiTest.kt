@@ -3,14 +3,15 @@ package dev.atvremote.app.ui
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
 import dev.atvremote.app.testutil.FakeSession
 import dev.atvremote.app.vm.DiscoveryViewModel
 import dev.atvremote.app.vm.KeyboardViewModel
-import dev.atvremote.app.vm.PairingUiState
 import dev.atvremote.app.vm.RemoteViewModel
 import dev.atvremote.protocol.AppleTvDevice
 import dev.atvremote.protocol.DeviceDiscovery
@@ -25,8 +26,11 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 // Reconciliation E: Compose UI test runs JVM-side under Robolectric (no
-// emulator here). Mirrors HeroScreenUiTest / PairScreenUiTest (the reference
-// templates); runs via :app:testDebugUnitTest, NOT connectedDebugAndroidTest.
+// emulator here). Mirrors RemoteScreenUiTest / ConnectScreenUiTest (the
+// reference templates); runs via :app:testDebugUnitTest, NOT
+// connectedDebugAndroidTest. Pins the Claude-Design nav restructure (spec
+// Screen 3): REMOTE / CONNECT / TUNING, multicast lock on CONNECT, the Remote
+// device-switcher chip → CONNECT in switcher-overlay mode.
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
 class AppNavUiTest {
@@ -52,7 +56,7 @@ class AppNavUiTest {
 
     private fun lock() = MulticastLockHolder(ApplicationProvider.getApplicationContext())
 
-    @Test fun initialDevicesTrueRendersDevicesNotHero() {
+    @Test fun firstRunLandsOnConnectNotRemote() {
         rule.setContent {
             AppNav(
                 discoveryVm = discoveryVm(),
@@ -60,7 +64,9 @@ class AppNavUiTest {
                 keyboardVm = keyboardVm(),
                 connectionState = UiConnectionState.Idle,
                 deviceName = "Apple TV",
-                initialDevices = true,
+                connectedDeviceId = null,
+                pairingDeviceName = null,
+                initialDevices = true, // no reconnectable last → CONNECT
                 onSelectDevice = {},
                 pairingState = null,
                 onSubmitPin = {},
@@ -71,14 +77,13 @@ class AppNavUiTest {
                 keyboardProbe = { "" },
             )
         }
-        // T5 fully rewrites AppNav + these tests for the REMOTE/CONNECT
-        // restructure. T4b interim: DEVICES now renders the ConnectScreen
-        // (first-run mode) — assert its hero copy proves we landed on
-        // DEVICES/ConnectScreen, not a dead HERO.
+        // First-run ConnectScreen hero copy proves we landed on CONNECT (not a
+        // dead REMOTE). The first-run mode shows the STEP-01 hero (currentId/
+        // onClose null).
         rule.onNodeWithText("寻找你的 Apple TV").assertIsDisplayed()
     }
 
-    @Test fun requestedPairWithAwaitingPinRendersPairScreen() {
+    @Test fun requestedRemoteRendersRemoteScreen() {
         rule.setContent {
             AppNav(
                 discoveryVm = discoveryVm(),
@@ -86,29 +91,29 @@ class AppNavUiTest {
                 keyboardVm = keyboardVm(),
                 connectionState = UiConnectionState.Idle,
                 deviceName = "Apple TV",
-                initialDevices = true,
+                connectedDeviceId = null,
+                pairingDeviceName = null,
+                initialDevices = true, // start on CONNECT…
                 onSelectDevice = {},
-                pairingState = PairingUiState.AwaitingPin,
+                pairingState = null,
                 onSubmitPin = {},
                 onPairCancel = {},
-                // MainActivity drives navigation to PAIR via this hoisted signal.
-                requestedDestination = NavRequest(AppDestinations.PAIR, 1),
+                // …then MainActivity drives a nav to REMOTE (the auto-reconnect
+                // / post-pair success path).
+                requestedDestination = NavRequest(AppDestinations.REMOTE, 1),
                 multicastLock = lock(),
                 haptics = null,
                 keyboardProbe = { "" },
             )
         }
-        // T5 fully rewrites AppNav + these tests for the REMOTE/CONNECT
-        // restructure. T4b interim: PAIR renders ConnectScreen with the
-        // in-screen PairingSheet overlay (pairingState=AwaitingPin) — assert
-        // the sheet's sub-copy proves the pairing overlay composed.
-        rule.onNodeWithText("请输入电视屏幕上显示的 4 位配对码").assertIsDisplayed()
+        // RemoteScreen's touchpad testTag proves we rendered the remote.
+        rule.onNodeWithTag("trackpad").assertExists()
     }
 
-    @Test fun multicastLockHeldOnDevicesReleasedAfterNavigatingAway() {
+    @Test fun multicastLockHeldOnConnectReleasedAfterNavigatingAway() {
         val h = lock()
         // Hoisted, non-composable backing state so the test can drive
-        // navigation away from DEVICES after composition.
+        // navigation away from CONNECT after composition.
         val reqState = mutableStateOf<NavRequest?>(null)
         rule.setContent {
             AppNav(
@@ -117,7 +122,9 @@ class AppNavUiTest {
                 keyboardVm = keyboardVm(),
                 connectionState = UiConnectionState.Idle,
                 deviceName = "Apple TV",
-                initialDevices = true, // start on DEVICES
+                connectedDeviceId = null,
+                pairingDeviceName = null,
+                initialDevices = true, // start on CONNECT
                 onSelectDevice = {},
                 pairingState = null,
                 onSubmitPin = {},
@@ -129,11 +136,54 @@ class AppNavUiTest {
             )
         }
         rule.waitForIdle()
-        assertTrue(h.isHeld(), "multicast lock must be held while DEVICES is shown")
+        assertTrue(h.isHeld(), "multicast lock must be held while CONNECT is shown")
 
-        // Navigate away (to TUNING) — DisposableEffect onDispose must release it.
+        // Navigate away (to TUNING) — the DisposableEffect (now on CONNECT)
+        // onDispose must release it.
         rule.runOnUiThread { reqState.value = NavRequest(AppDestinations.TUNING, 1) }
         rule.waitForIdle()
-        assertFalse(h.isHeld(), "multicast lock must be released after leaving DEVICES")
+        assertFalse(h.isHeld(), "multicast lock must be released after leaving CONNECT")
+    }
+
+    @Test fun remoteDeviceSwitcherChipOpensConnectInSwitcherOverlayMode() {
+        rule.setContent {
+            AppNav(
+                discoveryVm = discoveryVm(), // contains device id="id1"
+                remoteVm = remoteVm(),
+                keyboardVm = keyboardVm(),
+                connectionState = UiConnectionState.Connected(device),
+                deviceName = "Living Room",
+                connectedDeviceId = "id1",
+                pairingDeviceName = null,
+                initialDevices = false, // reconnectable → start on REMOTE
+                onSelectDevice = {},
+                pairingState = null,
+                onSubmitPin = {},
+                onPairCancel = {},
+                requestedDestination = null,
+                multicastLock = lock(),
+                haptics = null,
+                keyboardProbe = { "" },
+            )
+        }
+        rule.waitForIdle()
+        // On REMOTE: the centered device-switcher chip shows the device name.
+        rule.onNodeWithText("Living Room").assertIsDisplayed()
+        // Tapping it opens CONNECT in switcher-overlay mode (currentId="id1",
+        // onClose != null).
+        rule.onNodeWithText("Living Room").performClick()
+        rule.waitForIdle()
+        // Switcher-overlay mode proof: the switch eyebrow + the connected
+        // device's CURRENT badge (currentId == the device id → ConnectScreen
+        // marks that card current).
+        rule.onNodeWithText("SWITCH — SELECT DEVICE").assertIsDisplayed()
+        rule.onNodeWithText("CURRENT").assertIsDisplayed()
+
+        // Tapping the current device card invokes onClose → back to REMOTE
+        // (ConnectScreen routes a current-card tap to onClose). Proven by the
+        // touchpad reappearing.
+        rule.onNodeWithText("CURRENT").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithTag("trackpad").assertExists()
     }
 }

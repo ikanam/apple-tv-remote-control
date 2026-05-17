@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
                 if (existing != null) {
                     launchConnectGuarded(cm, device, HapCredentials.parse(existing))
                     graph.credentialStore.saveLastDevice(device)
-                    navigateTo(AppDestinations.HERO)
+                    navigateTo(AppDestinations.REMOTE)
                     pendingSelect = null
                 } else {
                     // I2: a re-select of a different device while a stale
@@ -175,7 +175,10 @@ class MainActivity : ComponentActivity() {
                         ),
                         device = device,
                     )
-                    navigateTo(AppDestinations.PAIR)
+                    // Pairing is the PairingSheet overlay *inside* CONNECT
+                    // (T4b) — no separate PAIR destination. MainActivity drives
+                    // pairingState in; AppNav renders the sheet over CONNECT.
+                    navigateTo(AppDestinations.CONNECT)
                 }
             }
 
@@ -191,16 +194,17 @@ class MainActivity : ComponentActivity() {
 
             // §3 pairing terminal-state table (I2 — explicit & symmetric, so
             // neither `pairing` nor `pendingSelect` can stay set without the
-            // screen showing PAIR):
+            // PairingSheet showing over CONNECT):
             //   Completed → connect (creds loaded by the bound device, I3) +
-            //               saveLastDevice + clear pairing/pendingSelect + HERO.
-            //   Failed    → STAY on PairScreen's Failed branch (it shows the
-            //               reason + Back). Do NOT auto-navigate/auto-clear —
-            //               the user must see the reason; teardown is the
-            //               single reliable onPairCancel (Back) path below,
+            //               saveLastDevice + clear pairing/pendingSelect +
+            //               REMOTE.
+            //   Failed    → STAY on the PairingSheet's Failed branch (it shows
+            //               the reason + 取消). Do NOT auto-navigate/auto-clear
+            //               — the user must see the reason; teardown is the
+            //               single reliable onPairCancel (取消) path below,
             //               which cancels the VM + clears pairing/pendingSelect
-            //               + goes DEVICES.
-            //   Cancel/Back (onPairCancel) → cancel VM + clear + DEVICES.
+            //               (the sheet then closes — CONNECT stays).
+            //   Cancel (onPairCancel) → cancel VM + clear (sheet closes).
             // A mid-pair re-select of a different device cancels the previous
             // VM where the new ActivePairing is built (above).
             LaunchedEffect(pairing, pairingState) {
@@ -217,10 +221,10 @@ class MainActivity : ComponentActivity() {
                     }
                     pairing = null
                     pendingSelect = null
-                    navigateTo(AppDestinations.HERO)
+                    navigateTo(AppDestinations.REMOTE)
                 }
-                // Failed: intentionally no-op here — stay on PAIR (Failed
-                // branch). onPairCancel (Back) is the sole teardown.
+                // Failed: intentionally no-op here — stay on the PairingSheet
+                // Failed branch. onPairCancel (取消) is the sole teardown.
             }
 
             val initial = initialDevices ?: return@setContent
@@ -230,13 +234,21 @@ class MainActivity : ComponentActivity() {
                 keyboardVm = keyboardVm,
                 connectionState = ui,
                 deviceName = (ui as? UiConnectionState.Connected)?.device?.name ?: "Apple TV",
+                // Connected device id seeds the switcher-overlay `currentId`
+                // when the Remote chip opens CONNECT (null when not connected).
+                connectedDeviceId = (ui as? UiConnectionState.Connected)?.device?.id,
+                // The 22sp PairingSheet title — the device the active pairing
+                // VM was bound to (I3), else null (sheet falls back to mode
+                // title; only shown while pairingState != null anyway).
+                pairingDeviceName = pairing?.device?.name,
                 initialDevices = initial,
                 onSelectDevice = { dd -> pendingSelect = dd },
                 pairingState = pairingState,
                 onSubmitPin = { pairing?.vm?.submitPin(it) },
-                // I2: Back is the single reliable teardown for BOTH the Failed
+                // I2: 取消 is the single reliable teardown for BOTH the Failed
                 // branch and an in-progress cancel — cancel the VM, clear
-                // pairing + pendingSelect (AppNav then navigates DEVICES).
+                // pairing + pendingSelect. The PairingSheet closes because
+                // pairingState then becomes null; CONNECT stays (no nav).
                 onPairCancel = {
                     pairing?.vm?.cancel()
                     pairing = null
@@ -246,6 +258,11 @@ class MainActivity : ComponentActivity() {
                 multicastLock = graph.multicastLock,
                 haptics = graph.haptics,
                 keyboardProbe = { cm.currentSession()?.textGet() ?: "" },
+                // Real (or degraded-null) Wi-Fi info for the status pill.
+                // Informational + read-only; recomputed per composition is fine
+                // (WifiStatus is stateless and defensive).
+                ssid = graph.wifiStatus.ssid(),
+                localIp = graph.wifiStatus.localIpv4(),
             )
         }
     }

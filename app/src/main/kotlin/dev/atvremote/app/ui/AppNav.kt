@@ -11,7 +11,6 @@ import androidx.compose.runtime.setValue
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
 import dev.atvremote.app.ui.connect.ConnectScreen
-import dev.atvremote.app.ui.keyboard.KeyboardScreen
 import dev.atvremote.app.ui.remote.RemoteScreen
 import dev.atvremote.app.ui.theme.AtvRemoteTheme
 import dev.atvremote.app.vm.DiscoveredDevice
@@ -23,18 +22,21 @@ import dev.atvremote.app.vm.RemoteViewModel
 /**
  * Navigation destinations for the Apple TV remote app.
  *
- * The launcher destination is intentionally removed per spec 2026-05-16
- * (Plan-3 Amendment A). The app-launcher subsystem is not included in Plan-3.
- *
- * The NavHost composable wiring over these five destinations is built in
- * base Task 15 (amended). This enum is the sole content of this file until
- * that task adds the NavHost + screen composables.
+ * Restructured by the Claude-Design reskin (spec
+ * `docs/superpowers/specs/2026-05-17-claude-design-ui-reskin.md`, Screen 3).
+ * The old `[HERO, DEVICES, PAIR, KEYBOARD, TUNING]` model is superseded:
+ *  - [REMOTE] — the `RemoteScreen`; the KeyboardOverlay and the device-switcher
+ *    chip are *overlays/secondary* within it (T3), not separate destinations,
+ *    so the old `KEYBOARD` auto-route is gone (RemoteScreen auto-shows the
+ *    overlay on `KeyboardViewModel.state.visible` itself).
+ *  - [CONNECT] — the `ConnectScreen`, in first-run OR switcher-overlay mode;
+ *    the `PairingSheet` is an in-screen overlay within it (T4b).
+ *  - [TUNING] — the debug `SwipeTuningScreen`, reached only from the Connect
+ *    settings gear.
  */
 enum class AppDestinations(val route: String) {
-    HERO("hero"),
-    DEVICES("devices"),
-    PAIR("pair"),
-    KEYBOARD("keyboard"),
+    REMOTE("remote"),
+    CONNECT("connect"),
     TUNING("tuning"),
 }
 
@@ -45,16 +47,16 @@ enum class AppDestinations(val route: String) {
  * [hasReconnectableLast] is true iff there is a persisted last device AND it
  * still has stored credentials (computed in MainActivity from
  * `CredentialStore.lastDevice()` + `CredentialStore.load(id)`). When true the
- * app starts on HERO: the persisted device exists and an auto-reconnect has
+ * app starts on REMOTE: the persisted device exists and an auto-reconnect has
  * been requested (it is a `serviceScope.launch{}`, so the first composition
  * may commit before connect actually starts — the AppNav banner reflects
  * Connecting/Connected/Reconnecting as it progresses, and a terminal
- * CredentialInvalid/Failed shows the banner so the user opens Devices to
+ * CredentialInvalid/Failed shows the banner so the user opens Connect to
  * re-pair). When false (fresh install / creds cleared) the app starts on
- * DEVICES so the user can discover & pair instead of landing on a dead HERO.
+ * CONNECT so the user can discover & pair instead of landing on a dead REMOTE.
  */
 internal fun initialDestination(hasReconnectableLast: Boolean): AppDestinations =
-    if (hasReconnectableLast) AppDestinations.HERO else AppDestinations.DEVICES
+    if (hasReconnectableLast) AppDestinations.REMOTE else AppDestinations.CONNECT
 
 /**
  * A navigation request hoisted from MainActivity (which owns the async
@@ -67,24 +69,57 @@ internal fun initialDestination(hasReconnectableLast: Boolean): AppDestinations 
 data class NavRequest(val dest: AppDestinations, val seq: Int)
 
 /**
- * Top-level navigation (spec §5 nav structure): Hero is home; top-bar device
- * button -> Devices/Pair; "More" -> Tuning (debug/settings); focused text
- * field auto-routes to Keyboard.
+ * Carries the CONNECT screen's *mode* across a nav request (the only piece of
+ * state that must survive the hoisted-signal hop besides [NavRequest.dest]).
  *
- * Reconciled per the Plan-3 remote-layout amendment (R2): the base Task-15
- * `enum class Dest{...Launcher...}` is replaced by the Amendment-A
- * [AppDestinations] enum (no Launcher); `LauncherViewModel`/`AppLauncherScreen`/
- * `HeroCallbacks` are dropped (the amended [HeroScreen] takes flat lambdas, no
- * `HeroCallbacks`); `haptics`/`keyboardProbe` are threaded through to wire the
- * amended Hero.
+ * - `null` ⇒ CONNECT renders in **first-run mode**: `currentId = null`,
+ *   `onClose = null` (no back button, STEP-01 hero). This is the auto/
+ *   first-run/post-cancel path.
+ * - non-null ⇒ CONNECT renders in **switcher-overlay mode**: reached from the
+ *   Remote device-switcher chip; `currentId` = the connected device's id (its
+ *   card shows the `CURRENT` badge + accent border), and `onClose` is wired to
+ *   `navigateTo(REMOTE)` so back / tapping the current device returns to the
+ *   remote. Selecting a *different* device still goes through the normal
+ *   `onSelectDevice` (S5 connect-or-pair) path.
+ */
+@JvmInline
+value class ConnectMode(val currentId: String?)
+
+/**
+ * Top-level navigation (Claude-Design reskin, spec Screen 3): [REMOTE] is home;
+ * the Remote device-switcher chip opens [CONNECT] in switcher-overlay mode; the
+ * Connect settings gear opens [TUNING]; on a fresh/cleared install the app
+ * starts on [CONNECT] in first-run mode (see [initialDestination]).
  *
- * S5 wires the real Devices->Pair->connect + first-run/auto-reconnect flow.
- * AppNav still solely owns `dest`; MainActivity drives navigation for its
- * async pair/connect decisions via the hoisted [requestedDestination] signal
- * (a `LaunchedEffect` applies it to `dest` whenever MainActivity sets it).
- * [initialDevices] picks the start destination (see [initialDestination]).
+ * The keyboard is the RemoteScreen in-screen overlay (T3) — there is no
+ * KEYBOARD destination and no kb.visible auto-route here (RemoteScreen
+ * auto-shows the overlay on `KeyboardViewModel.state.visible` itself). The
+ * `PairingSheet` is a CONNECT-internal overlay (T4b) — there is no PAIR
+ * destination; MainActivity drives the pairing state in via [pairingState].
+ *
+ * S5 connection logic is preserved verbatim: AppNav still solely owns `dest`;
+ * MainActivity drives navigation for its async pair/connect decisions via the
+ * hoisted [requestedDestination] signal (a `LaunchedEffect` applies it to
+ * `dest` whenever MainActivity sets one). [initialDevices] picks the start
+ * destination.
+ *
+ * **Switcher-overlay state threading.** CONNECT has two modes (first-run vs
+ * switcher-overlay). The mode is local to AppNav and not part of the
+ * MainActivity-owned nav signal, so it is tracked here in a hoisted
+ * [ConnectMode]? (`connectMode`):
+ *  - The Remote chip's `onSwitchDevice` sets `dest = CONNECT` AND
+ *    `connectMode = ConnectMode(currentId = connectedDeviceId)` in the same
+ *    in-composition handler (analogous to the old `dest = DEVICES`).
+ *  - Any MainActivity-driven [requestedDestination] (auto-reconnect success,
+ *    select→pair, pair Completed, Cancel) clears `connectMode` to null →
+ *    first-run mode. This keeps the connection state machine in MainActivity
+ *    untouched: MainActivity only ever asks for a *destination*, never a mode.
+ *
  * The Wi-Fi multicast lock ([multicastLock], spec §4) is held by a
- * `DisposableEffect` ONLY while the Devices screen is shown.
+ * `DisposableEffect` ONLY while CONNECT is shown (discovery lives there now).
+ * [ssid]/[localIp] are the real (or degraded-null) Wi-Fi info from
+ * MainActivity's `WifiStatus`. [connectedDeviceId] is the currently-connected
+ * device id (used to seed switcher-overlay `currentId`).
  */
 @Composable
 fun AppNav(
@@ -93,6 +128,8 @@ fun AppNav(
     keyboardVm: KeyboardViewModel,
     connectionState: UiConnectionState,
     deviceName: String,
+    connectedDeviceId: String?,
+    pairingDeviceName: String?,
     initialDevices: Boolean,
     onSelectDevice: (DiscoveredDevice) -> Unit,
     pairingState: PairingUiState?,
@@ -102,29 +139,31 @@ fun AppNav(
     multicastLock: MulticastLockHolder,
     haptics: dev.atvremote.app.haptics.Haptics?,
     keyboardProbe: suspend () -> String,
+    ssid: String? = null,
+    localIp: String? = null,
 ) {
     AtvRemoteTheme {
         var dest by remember {
             mutableStateOf(initialDestination(hasReconnectableLast = !initialDevices))
         }
-        val kb by keyboardVm.state.collectAsState()
+        // CONNECT mode: null = first-run (no close/currentId), non-null =
+        // switcher overlay (reached from the Remote chip). Owned by AppNav,
+        // NOT part of the MainActivity nav signal — any MainActivity-driven
+        // requestedDestination resets it to first-run (see KDoc).
+        var connectMode by remember { mutableStateOf<ConnectMode?>(null) }
         val disc by discoveryVm.state.collectAsState()
 
         // MainActivity's async pair/connect/back decisions navigate via this
         // hoisted signal — AppNav still owns `dest`, this only applies the
-        // requested destination when MainActivity sets one.
+        // requested destination when MainActivity sets one. A MainActivity nav
+        // is always a non-overlay (first-run) CONNECT — only the in-composition
+        // Remote chip sets switcher-overlay mode.
         LaunchedEffect(requestedDestination) {
-            requestedDestination?.let { dest = it.dest }
+            requestedDestination?.let {
+                dest = it.dest
+                connectMode = null
+            }
         }
-
-        // Auto-route to the keyboard when the ATV focuses a text field (spec §5/§6).
-        // Intentionally overrides requestedDestination while kb.visible — an
-        // actively-focused TV text field wins (do not 'fix' the apparent
-        // NavRequest no-op): this block runs during composition while the
-        // requestedDestination LaunchedEffect is post-commit, so on the next
-        // frame a focused field re-asserts KEYBOARD over a just-applied nav.
-        if (kb.visible && dest != AppDestinations.KEYBOARD) dest = AppDestinations.KEYBOARD
-        if (!kb.visible && dest == AppDestinations.KEYBOARD) dest = AppDestinations.HERO
 
         val banner = when (connectionState) {
             is UiConnectionState.Reconnecting -> "Reconnecting…"
@@ -136,73 +175,61 @@ fun AppNav(
         }
 
         when (dest) {
-            // T3: HeroScreen (+ Trackpad/DpadRow/ButtonRow) is replaced by the
-            // Claude-Design RemoteScreen. KeyboardOverlay is now an in-screen
-            // overlay (driven by keyboardVm + the gated Keyboard button), NOT a
-            // separate KEYBOARD destination, so onOpenKeyboard/onOpenMore are
-            // gone. This is the ONLY AppNav branch T3 touches — the full nav
-            // restructure (AppDestinations/initialDestination/MainActivity) is
-            // T5's job; the enum/other branches stay unchanged here.
-            AppDestinations.HERO -> RemoteScreen(
+            // HeroScreen (+ Trackpad/DpadRow/ButtonRow) is replaced by the
+            // Claude-Design RemoteScreen. KeyboardOverlay + the device-switcher
+            // chip are RemoteScreen-internal overlays (T3), NOT separate
+            // destinations. The chip → CONNECT in switcher-overlay mode with
+            // currentId = the connected device id.
+            AppDestinations.REMOTE -> RemoteScreen(
                 remoteVm = remoteVm,
                 keyboardVm = keyboardVm,
                 deviceName = deviceName,
-                onSwitchDevice = { dest = AppDestinations.DEVICES },
+                onSwitchDevice = {
+                    connectMode = ConnectMode(currentId = connectedDeviceId)
+                    dest = AppDestinations.CONNECT
+                },
                 tuning = dev.atvremote.app.swipe.SwipeTuning.DEFAULT,
                 haptics = haptics,
                 keyboardProbe = keyboardProbe,
                 connectionBanner = banner,
             )
-            AppDestinations.DEVICES -> {
-                // §4: hold the Wi-Fi multicast lock ONLY while Devices is shown
+            AppDestinations.CONNECT -> {
+                // §4: hold the Wi-Fi multicast lock ONLY while CONNECT is shown
                 // (battery-correct). Discovery (DiscoveryViewModel already
                 // collecting) then actually receives mDNS. Auto-reconnect uses
-                // the persisted device → needs no discovery → no lock.
+                // the persisted device → needs no discovery → no lock. (Moved
+                // here from the old DEVICES branch — discovery now lives in
+                // CONNECT.)
                 DisposableEffect(Unit) {
                     multicastLock.acquire()
                     onDispose { multicastLock.release() }
                 }
-                // T4b: DevicesScreen → Claude-Design ConnectScreen (first-run
-                // mode: onClose/currentId/ssid/localIp left default → degraded
-                // pill, no overlay). Post-select navigation is still decided by
-                // MainActivity (async load/pair) via requestedDestination, NOT
-                // inline here. T5 fully rewrites AppNav + the AppDestinations /
-                // initialDestination / MainActivity restructure (REMOTE/CONNECT,
-                // real SSID supply, currentId/onClose overlay mode); this is the
-                // minimal interim swap so it compiles & uses ConnectScreen,
-                // keeping the enum / other branches / initialDestination / the
-                // multicast DisposableEffect placement unchanged.
+                val overlay = connectMode
                 ConnectScreen(
                     devices = disc.devices,
                     scanning = disc.scanning,
                     onSelectDevice = { onSelectDevice(it) },
-                    pairingState = null,
+                    pairingState = pairingState,
                     onSubmitPin = onSubmitPin,
                     onPairCancel = onPairCancel,
+                    pairingDeviceName = pairingDeviceName,
+                    // First-run mode: currentId/onClose null. Switcher-overlay
+                    // mode (from the Remote chip): currentId = connected id,
+                    // onClose → back to REMOTE (also fired when the user taps
+                    // the current device card — ConnectScreen routes that to
+                    // onClose internally).
+                    currentId = overlay?.currentId,
+                    onClose = if (overlay != null) {
+                        { connectMode = null; dest = AppDestinations.REMOTE }
+                    } else {
+                        null
+                    },
                     onOpenSettings = { dest = AppDestinations.TUNING },
+                    ssid = ssid,
+                    localIp = localIp,
                     onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
                 )
             }
-            // T4b interim: PAIR now renders ConnectScreen with the in-screen
-            // PairingSheet showing over the list (pairingState non-null →
-            // overlay). This preserves the existing MainActivity select→PAIR
-            // flow with the least change; T5 fully rewrites AppNav + these
-            // tests for the REMOTE/CONNECT restructure (PairingSheet becomes a
-            // CONNECT-internal overlay, no separate PAIR destination).
-            AppDestinations.PAIR -> ConnectScreen(
-                devices = disc.devices,
-                scanning = disc.scanning,
-                onSelectDevice = { onSelectDevice(it) },
-                pairingState = pairingState ?: PairingUiState.Connecting,
-                onSubmitPin = onSubmitPin,
-                onPairCancel = { onPairCancel(); dest = AppDestinations.DEVICES },
-                onOpenSettings = { dest = AppDestinations.TUNING },
-                onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
-            )
-            AppDestinations.KEYBOARD -> KeyboardScreen(
-                state = kb,
-                onTextChange = keyboardVm::setText,
-            )
             AppDestinations.TUNING -> dev.atvremote.app.ui.tuning.SwipeTuningScreen()
         }
     }
