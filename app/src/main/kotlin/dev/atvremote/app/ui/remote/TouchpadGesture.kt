@@ -48,6 +48,8 @@ internal class TouchpadGesture(
     private val touchSlopPx: Float,
     /** Fraction of the smaller pad dimension per repeated HID step. */
     private val dragStepFraction: Float = DEFAULT_DRAG_STEP_FRACTION,
+    /** iPhone-style trackpad should follow deliberate direction changes mid-drag. */
+    private val allowDirectionChanges: Boolean = false,
     private val longPressMs: Long = DEFAULT_LONG_PRESS_MS,
 ) {
     /**
@@ -77,6 +79,9 @@ internal class TouchpadGesture(
     private var dragButton: RemoteButton? = null
     private var dragSign = 0f
     private var lastStepProgressPx = 0f
+    private var realtimePendingDx = 0f
+    private var realtimePendingDy = 0f
+    private var realtimeNextStepPx = 0f
     /** Set once a centre long-press has been delivered *during* the hold
      *  ([onHoldTick]); the rest of that touch is then inert (hunt #2 — the
      *  long-press is a discrete event, like a hardware remote, not gated on
@@ -106,6 +111,9 @@ internal class TouchpadGesture(
         dragButton = null
         dragSign = 0f
         lastStepProgressPx = 0f
+        realtimePendingDx = 0f
+        realtimePendingDy = 0f
+        realtimeNextStepPx = touchSlopPx
         longPressDelivered = false
         longPressSuppressed = false
         return Outcome.NONE
@@ -139,15 +147,27 @@ internal class TouchpadGesture(
         if (longPressDelivered) return Outcome.NONE
         totalDx += dx
         totalDy += dy
+        if (allowDirectionChanges) {
+            realtimePendingDx += dx
+            realtimePendingDy += dy
+        }
         if (!isDrag && hypot(totalDx, totalDy) > touchSlopPx) {
             isDrag = true
-            startDirectionalDrag()
+            if (!allowDirectionChanges) {
+                startDirectionalDrag()
+            }
         }
         return if (isDrag) {
             // Focus navigation must be deterministic. The physical drag emits
             // HID direction presses, so tvOS/app content cannot reinterpret a
             // leftward stream as a right rebound.
-            Outcome(events = directionalDragSteps())
+            Outcome(
+                events = if (allowDirectionChanges) {
+                    realtimeDirectionalDragSteps()
+                } else {
+                    directionalDragSteps()
+                },
+            )
         } else {
             maybeLongPress(uptimeMs)
         }
@@ -244,6 +264,32 @@ internal class TouchpadGesture(
             out += TouchEvent.DirectionalStep(button)
             lastStepProgressPx = nextStepAtPx
             nextStepAtPx += dragStepPx()
+        }
+        return out
+    }
+
+    private fun realtimeDirectionalDragSteps(): List<TouchEvent> {
+        val out = ArrayList<TouchEvent>()
+        val axisTieEpsilonPx = min(widthPx, heightPx) * AXIS_TIE_EPSILON_FRACTION
+        while (true) {
+            val horizontal = abs(realtimePendingDx) + axisTieEpsilonPx >= abs(realtimePendingDy)
+            val progress = if (horizontal) abs(realtimePendingDx) else abs(realtimePendingDy)
+            if (progress < realtimeNextStepPx) break
+
+            if (horizontal) {
+                val sign = if (realtimePendingDx >= 0f) 1f else -1f
+                out += TouchEvent.DirectionalStep(
+                    if (sign > 0f) RemoteButton.Right else RemoteButton.Left,
+                )
+                realtimePendingDx -= sign * realtimeNextStepPx
+            } else {
+                val sign = if (realtimePendingDy >= 0f) 1f else -1f
+                out += TouchEvent.DirectionalStep(
+                    if (sign > 0f) RemoteButton.Down else RemoteButton.Up,
+                )
+                realtimePendingDy -= sign * realtimeNextStepPx
+            }
+            realtimeNextStepPx = dragStepPx()
         }
         return out
     }

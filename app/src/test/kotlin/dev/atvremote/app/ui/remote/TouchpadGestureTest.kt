@@ -31,7 +31,14 @@ class TouchpadGestureTest {
 
     private fun gesture(
         tuning: SwipeTuning = SwipeTuning.DEFAULT,
-    ) = TouchpadGesture(W, H, slop, tuning.dragStepFraction)
+        allowDirectionChanges: Boolean = false,
+    ) = TouchpadGesture(
+        W,
+        H,
+        slop,
+        tuning.dragStepFraction,
+        allowDirectionChanges = allowDirectionChanges,
+    )
 
     // --- I1: a discrete tap fires ONE direction and ZERO touch events ------
 
@@ -371,6 +378,24 @@ class TouchpadGestureTest {
         val steps = all.filterIsInstance<TouchEvent.DirectionalStep>().map { it.button }
         assertTrue(steps.isNotEmpty(), "downward drag should emit a HID step: $all")
         assertTrue(steps.all { it == RemoteButton.Down }, "downward drag must only emit Down: $steps")
+    }
+
+    @Test fun realtimeDragCanTurnCornerWithinOnePress() {
+        val g = gesture(allowDirectionChanges = true)
+        val all = ArrayList<TouchEvent>()
+        fun apply(o: TouchpadGesture.Outcome) { all += o.events }
+        apply(g.onDown(120f, 120f, 0L))
+        apply(g.onMove(120f, 150f, 0f, 30f, 16L))
+        apply(g.onMove(120f, 160f, 0f, 10f, 32L))
+        apply(g.onMove(175f, 160f, 55f, 0f, 48L))
+        apply(g.onMove(230f, 160f, 55f, 0f, 64L))
+        apply(g.onUp(230f, 160f, 80L))
+
+        assertEquals(
+            listOf(RemoteButton.Down, RemoteButton.Right, RemoteButton.Right),
+            all.filterIsInstance<TouchEvent.DirectionalStep>().map { it.button },
+            "iPhone realtime drag should follow an L-shaped turn: $all",
+        )
     }
 
     // --- cancellation: drag terminates without extra output ---------------

@@ -403,6 +403,7 @@ fun IphoneTouchArea(
                             h,
                             touchSlopPx,
                             tuning.dragStepFraction,
+                            allowDirectionChanges = true,
                         )
 
                         fun apply(outcome: TouchpadGesture.Outcome) {
