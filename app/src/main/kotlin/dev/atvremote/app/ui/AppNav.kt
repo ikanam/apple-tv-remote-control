@@ -10,10 +10,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
-import dev.atvremote.app.ui.devices.DevicesScreen
+import dev.atvremote.app.ui.connect.ConnectScreen
 import dev.atvremote.app.ui.keyboard.KeyboardScreen
 import dev.atvremote.app.ui.remote.RemoteScreen
-import dev.atvremote.app.ui.pair.PairScreen
 import dev.atvremote.app.ui.theme.AtvRemoteTheme
 import dev.atvremote.app.vm.DiscoveredDevice
 import dev.atvremote.app.vm.DiscoveryViewModel
@@ -163,17 +162,42 @@ fun AppNav(
                     multicastLock.acquire()
                     onDispose { multicastLock.release() }
                 }
-                DevicesScreen(
+                // T4b: DevicesScreen → Claude-Design ConnectScreen (first-run
+                // mode: onClose/currentId/ssid/localIp left default → degraded
+                // pill, no overlay). Post-select navigation is still decided by
+                // MainActivity (async load/pair) via requestedDestination, NOT
+                // inline here. T5 fully rewrites AppNav + the AppDestinations /
+                // initialDestination / MainActivity restructure (REMOTE/CONNECT,
+                // real SSID supply, currentId/onClose overlay mode); this is the
+                // minimal interim swap so it compiles & uses ConnectScreen,
+                // keeping the enum / other branches / initialDestination / the
+                // multicast DisposableEffect placement unchanged.
+                ConnectScreen(
                     devices = disc.devices,
-                    // Post-select navigation is decided by MainActivity (async
-                    // load/pair) via requestedDestination — NOT inline here.
-                    onSelect = { onSelectDevice(it) },
+                    scanning = disc.scanning,
+                    onSelectDevice = { onSelectDevice(it) },
+                    pairingState = null,
+                    onSubmitPin = onSubmitPin,
+                    onPairCancel = onPairCancel,
+                    onOpenSettings = { dest = AppDestinations.TUNING },
+                    onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
                 )
             }
-            AppDestinations.PAIR -> PairScreen(
-                state = pairingState ?: PairingUiState.Connecting,
+            // T4b interim: PAIR now renders ConnectScreen with the in-screen
+            // PairingSheet showing over the list (pairingState non-null →
+            // overlay). This preserves the existing MainActivity select→PAIR
+            // flow with the least change; T5 fully rewrites AppNav + these
+            // tests for the REMOTE/CONNECT restructure (PairingSheet becomes a
+            // CONNECT-internal overlay, no separate PAIR destination).
+            AppDestinations.PAIR -> ConnectScreen(
+                devices = disc.devices,
+                scanning = disc.scanning,
+                onSelectDevice = { onSelectDevice(it) },
+                pairingState = pairingState ?: PairingUiState.Connecting,
                 onSubmitPin = onSubmitPin,
-                onCancel = { onPairCancel(); dest = AppDestinations.DEVICES },
+                onPairCancel = { onPairCancel(); dest = AppDestinations.DEVICES },
+                onOpenSettings = { dest = AppDestinations.TUNING },
+                onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
             )
             AppDestinations.KEYBOARD -> KeyboardScreen(
                 state = kb,

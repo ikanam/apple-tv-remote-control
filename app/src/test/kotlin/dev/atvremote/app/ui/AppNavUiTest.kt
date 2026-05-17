@@ -71,8 +71,11 @@ class AppNavUiTest {
                 keyboardProbe = { "" },
             )
         }
-        // DevicesScreen header — proves we landed on DEVICES, not a dead HERO.
-        rule.onNodeWithText("Apple TVs on your network").assertIsDisplayed()
+        // T5 fully rewrites AppNav + these tests for the REMOTE/CONNECT
+        // restructure. T4b interim: DEVICES now renders the ConnectScreen
+        // (first-run mode) — assert its hero copy proves we landed on
+        // DEVICES/ConnectScreen, not a dead HERO.
+        rule.onNodeWithText("寻找你的 Apple TV").assertIsDisplayed()
     }
 
     @Test fun requestedPairWithAwaitingPinRendersPairScreen() {
@@ -95,7 +98,11 @@ class AppNavUiTest {
                 keyboardProbe = { "" },
             )
         }
-        rule.onNodeWithText("Enter the code shown on your Apple TV").assertIsDisplayed()
+        // T5 fully rewrites AppNav + these tests for the REMOTE/CONNECT
+        // restructure. T4b interim: PAIR renders ConnectScreen with the
+        // in-screen PairingSheet overlay (pairingState=AwaitingPin) — assert
+        // the sheet's sub-copy proves the pairing overlay composed.
+        rule.onNodeWithText("请输入电视屏幕上显示的 4 位配对码").assertIsDisplayed()
     }
 
     @Test fun multicastLockHeldOnDevicesReleasedAfterNavigatingAway() {
