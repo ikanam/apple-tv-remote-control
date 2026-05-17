@@ -153,7 +153,7 @@ fun AppNav(
     haptics: dev.atvremote.app.haptics.Haptics?,
     keyboardProbe: suspend () -> String,
     wifiInfo: () -> Pair<String?, String?> = { null to null },
-    layoutStyle: RemoteLayoutStyle = RemoteLayoutStyle.Physical,
+    layoutStyle: RemoteLayoutStyle = RemoteLayoutStyle.Iphone,
     dragStepFraction: Float = SwipeTuning.DEFAULT.dragStepFraction,
     onLayoutStyleChange: (RemoteLayoutStyle) -> Unit = {},
     onDragStepFractionChange: (Float) -> Unit = {},

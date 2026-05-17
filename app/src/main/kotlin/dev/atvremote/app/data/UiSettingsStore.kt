@@ -19,7 +19,7 @@ class UiSettingsStore(private val context: Context) {
     val layoutStyle: Flow<RemoteLayoutStyle> = context.uiSettingsDataStore.data.map { prefs ->
         prefs[LAYOUT_STYLE_KEY]
             ?.let { runCatching { RemoteLayoutStyle.valueOf(it) }.getOrNull() }
-            ?: RemoteLayoutStyle.Physical
+            ?: RemoteLayoutStyle.Iphone
     }
 
     val dragStepFraction: Flow<Float> = context.uiSettingsDataStore.data.map { prefs ->

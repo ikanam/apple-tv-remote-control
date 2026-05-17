@@ -18,6 +18,10 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -139,8 +143,9 @@ private fun TuningParam(
     valueRange: ClosedFloatingPointRange<Float>,
     onValueChange: (Float) -> Unit,
 ) {
+    var localValue by remember { mutableStateOf(value) }
     Text(
-        text = "$title — ${"%.2f".format(value)}",
+        text = "$title — ${"%.2f".format(localValue)}",
         color = DesignTokens.TextPrimary,
         fontSize = 15.sp,
         fontWeight = FontWeight.SemiBold,
@@ -152,6 +157,11 @@ private fun TuningParam(
         fontSize = 12.sp,
         lineHeight = 18.sp,
     )
-    Slider(value = value, onValueChange = onValueChange, valueRange = valueRange)
+    Slider(
+        value = localValue,
+        onValueChange = { localValue = it },
+        onValueChangeFinished = { onValueChange(localValue) },
+        valueRange = valueRange,
+    )
     Spacer(Modifier.height(18.dp))
 }

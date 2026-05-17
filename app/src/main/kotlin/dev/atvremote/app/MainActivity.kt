@@ -96,7 +96,7 @@ class MainActivity : ComponentActivity() {
             val ui by cm.uiState.collectAsState()
             val uiScope = rememberCoroutineScope()
             val layoutStyle by graph.uiSettingsStore.layoutStyle
-                .collectAsState(initial = RemoteLayoutStyle.Physical)
+                .collectAsState(initial = RemoteLayoutStyle.Iphone)
             val dragStepFraction by graph.uiSettingsStore.dragStepFraction
                 .collectAsState(initial = SwipeTuning.DEFAULT.dragStepFraction)
 
