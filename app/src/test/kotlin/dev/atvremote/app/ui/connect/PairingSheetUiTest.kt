@@ -164,6 +164,70 @@ class PairingSheetUiTest {
         assertEquals(2, submitCount)
     }
 
+    // The realistic "wrong PIN twice with the SAME reason" case. The holder
+    // models the real VM honestly: `_state` is a MutableStateFlow and `Failed`
+    // is a data class, so assigning `Failed("配对码错误")` a 2nd time is an
+    // EQUAL value → mutableStateOf/StateFlow dedups it and emits NO new value.
+    // A `failed?.reason`-keyed clear effect would NOT re-fire (its key never
+    // changed) → the boxes would stay filled with the 2nd wrong PIN. The
+    // composable-owned attempt counter is what makes the clear re-fire here.
+    // This test FAILS on the pre-fix (reason-keyed) code and PASSES after.
+    @Test fun secondIdenticalReasonFailedClearsBoxesAgainAndReentryWorks() {
+        var submitCount = 0
+        var lastCode: String? = null
+        rule.setContent {
+            // Honest VM model: equal Failed values dedup (no re-emission).
+            var st by remember {
+                mutableStateOf<PairingUiState>(PairingUiState.AwaitingPin)
+            }
+            PairingSheet(
+                deviceName = "客厅",
+                pairingState = st,
+                onSubmitPin = {
+                    submitCount++
+                    lastCode = it
+                    // Same rejection reason every time (the realistic case).
+                    st = PairingUiState.Failed("配对码错误")
+                },
+                onCancel = {},
+            )
+        }
+
+        // 1st wrong attempt → Failed("配对码错误").
+        rule.onNodeWithContentDescription("PIN digit 1").performTextInput("9")
+        rule.onNodeWithContentDescription("PIN digit 2").performTextInput("9")
+        rule.onNodeWithContentDescription("PIN digit 3").performTextInput("9")
+        rule.onNodeWithContentDescription("PIN digit 4").performTextInput("9")
+        rule.waitForIdle()
+        assertEquals("9999", lastCode)
+        assertEquals(1, submitCount)
+        rule.onNodeWithText("配对码错误").assertIsDisplayed()
+        rule.onAllNodesWithText("9").assertCountEquals(0) // cleared after 1st
+
+        // 2nd wrong attempt — the holder assigns the SAME Failed("配对码错误")
+        // again (equal value → no StateFlow re-emission). The boxes MUST still
+        // be cleared (this is the assertion that fails pre-fix).
+        rule.onNodeWithContentDescription("PIN digit 1").performTextInput("8")
+        rule.onNodeWithContentDescription("PIN digit 2").performTextInput("8")
+        rule.onNodeWithContentDescription("PIN digit 3").performTextInput("8")
+        rule.onNodeWithContentDescription("PIN digit 4").performTextInput("8")
+        rule.waitForIdle()
+        assertEquals("8888", lastCode)
+        assertEquals(2, submitCount)
+        rule.onNodeWithText("配对码错误").assertIsDisplayed()
+        rule.onAllNodesWithText("8").assertCountEquals(0) // cleared after 2nd
+
+        // A 3rd, correct attempt still submits exactly once (guard re-armed,
+        // no double-submit, no stuck state).
+        rule.onNodeWithContentDescription("PIN digit 1").performTextInput("1")
+        rule.onNodeWithContentDescription("PIN digit 2").performTextInput("2")
+        rule.onNodeWithContentDescription("PIN digit 3").performTextInput("3")
+        rule.onNodeWithContentDescription("PIN digit 4").performTextInput("4")
+        rule.waitForIdle()
+        assertEquals("1234", lastCode)
+        assertEquals(3, submitCount)
+    }
+
     @Test fun completedInvokesOnPairedOnceAndShowsAffirmation() {
         var pairedCount = 0
         rule.setContent {
@@ -260,5 +324,12 @@ class PinBoxReducerTest {
         val start = PinBoxState()
         val s = pinBoxReduce(start, 0, "")
         assertEquals(start, s) // nothing to retreat to
+    }
+
+    @Test fun isCompleteIsFalseWhenAnInteriorBoxIsEmpty() {
+        // Gap-completeness: a hole in box 2 must NOT count as complete even
+        // though boxes 1/3/4 are filled (guards the single-submit trigger).
+        val gapped = PinBoxState(digits = listOf("1", "", "3", "4"))
+        assertEquals(false, gapped.isComplete)
     }
 }

@@ -105,6 +105,8 @@ fun PairingSheet(
     // [pinBoxReduce] reducer (unit-tested in PinBoxReducerTest) so the
     // auto-advance / backspace / single-submit logic is deterministic and not
     // entangled with Compose recomposition.
+    // `remember` (NOT `rememberSaveable`) is deliberate: a half-entered PIN
+    // must not survive process death — the VM re-enters AwaitingPin fresh.
     var boxes by remember { mutableStateOf(PinBoxState()) }
 
     // Single-submit guard: submit exactly once per completed fill. Reset when
@@ -112,12 +114,28 @@ fun PairingSheet(
     // for the retry) — never resubmit on a bare recomposition.
     var submitted by remember { mutableStateOf(false) }
 
-    // Clear + re-arm on Failed (and re-enable). Keyed on the reason so a fresh
-    // Failed(reason) after a retry clears again.
-    LaunchedEffect(failed?.reason) {
-        if (failed != null) {
+    // Composable-owned attempt counter: incremented on every onSubmitPin
+    // invocation. `PairingUiState.Failed` is a data class behind a
+    // StateFlow/mutableStateOf, so a 2nd wrong-PIN attempt with the SAME
+    // `reason` emits no new value and a `failed?.reason`-keyed effect would
+    // NOT re-fire — keying the clear effect on `attempt` instead makes it
+    // re-run on every submission outcome even when `Failed(reason)` repeats.
+    var attempt by remember { mutableStateOf(0) }
+
+    // Tracks the attempt already consumed by a clear, so we clear exactly once
+    // per FAILED attempt (not twice for one attempt, and not on bare
+    // recompositions where neither `pairingState` nor `attempt` changed).
+    var clearedAttempt by remember { mutableStateOf(-1) }
+
+    // Clear + re-arm on every Failed attempt (and re-enable). Keyed on
+    // `attempt` so an identical-reason 2nd rejection still re-fires (the
+    // referentially-unchanged `Failed` would otherwise dedup); the
+    // `clearedAttempt` guard prevents double-clearing the same attempt.
+    LaunchedEffect(pairingState, attempt) {
+        if (pairingState is PairingUiState.Failed && clearedAttempt != attempt) {
             boxes = PinBoxState()
             submitted = false
+            clearedAttempt = attempt
         }
     }
 
@@ -133,6 +151,8 @@ fun PairingSheet(
     // when it transitions to enabled (e.g. Connecting → AwaitingPin).
     LaunchedEffect(enabled, boxes.focused) {
         if (enabled) {
+            // runCatching: on the first frame the requester may not yet be
+            // attached to its node — swallow that and let the next run retry.
             runCatching { focusRequesters[boxes.focused].requestFocus() }
         }
     }
@@ -270,6 +290,7 @@ fun PairingSheet(
                                 if (!boxes.isComplete) submitted = false
                                 if (boxes.isComplete && !submitted) {
                                     submitted = true
+                                    attempt++ // each submission is a new attempt
                                     onSubmitPin(boxes.code)
                                 }
                             },
@@ -408,11 +429,6 @@ internal fun pinBoxReduce(state: PinBoxState, index: Int, raw: String): PinBoxSt
             // Already-empty first box, nothing to do.
             state
         }
-    }
-
-    if (raw.filter { !it.isDigit() }.isNotEmpty() && digitsOnly.isEmpty()) {
-        // Pure non-digit input on a non-empty box: ignore entirely.
-        return state
     }
 
     // A digit was entered: take the last digit char (overtype-replaces),
