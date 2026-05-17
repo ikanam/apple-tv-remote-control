@@ -7,13 +7,17 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performTouchInput
 import dev.atvremote.app.swipe.SwipeTuning
+import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.protocol.RemoteButton
+import dev.atvremote.protocol.TouchPhase
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * TDD for the Touchpad discrete-tap zone hit-test. The pure [zoneFor] function
@@ -129,5 +133,90 @@ class TouchpadZoneTest {
         }
         rule.waitForIdle()
         assertEquals(RemoteButton.Up, fired)
+    }
+
+    // --- Compose wiring: tap ≠ drag (no double-fire), C1/I2 path ----------
+    // These exercise the real awaitPointerEventScope loop (latched pointer id,
+    // rememberUpdatedState callbacks, uptimeMillis timestamps).
+
+    @Test fun pureClickFiresExactlyOneDirectionAndZeroTouchEvents() {
+        var fired: RemoteButton? = null
+        var dirCount = 0
+        val events = mutableListOf<TouchEvent>()
+        rule.setContent {
+            Touchpad(
+                tuning = SwipeTuning.DEFAULT,
+                onDirection = { fired = it; dirCount++ },
+                onTouchEvent = { events += it },
+            )
+        }
+        // A discrete click near the top edge ⇒ Up zone, no drag.
+        rule.onNodeWithTag("trackpad").performTouchInput {
+            click(Offset(width / 2f, height * 0.10f))
+        }
+        rule.waitForIdle()
+        assertEquals(RemoteButton.Up, fired)
+        assertEquals(1, dirCount, "a tap must fire exactly one onDirection")
+        assertTrue(
+            events.isEmpty(),
+            "a tap must deliver ZERO onTouchEvent (no SwipeEngine leak): $events",
+        )
+    }
+
+    @Test fun dragBeyondSlopFeedsSwipeEngineAndNeverFiresDirection() {
+        var fired: RemoteButton? = null
+        val events = mutableListOf<TouchEvent>()
+        rule.setContent {
+            Touchpad(
+                tuning = SwipeTuning.DEFAULT,
+                onDirection = { fired = it },
+                onTouchEvent = { events += it },
+            )
+        }
+        rule.onNodeWithTag("trackpad").performTouchInput {
+            val slop = viewConfiguration.touchSlop
+            down(center)
+            // Move clearly beyond touch-slop in a few samples.
+            moveBy(Offset(slop + 8f, 0f))
+            moveBy(Offset(40f, 0f))
+            moveBy(Offset(40f, 0f))
+            up()
+        }
+        rule.waitForIdle()
+        assertNull(fired, "a drag must NEVER fire a tap-zone onDirection")
+        assertTrue(events.isNotEmpty(), "a drag must feed the SwipeEngine stream")
+        assertEquals(
+            1,
+            events.filterIsInstance<TouchEvent.Move>()
+                .count { it.phase == TouchPhase.Release },
+            "a drag must be closed by exactly one terminal Move(Release): $events",
+        )
+    }
+
+    @Test fun cancelledGestureEmitsTerminatingReleaseAndNoDirection() {
+        var fired: RemoteButton? = null
+        val events = mutableListOf<TouchEvent>()
+        rule.setContent {
+            Touchpad(
+                tuning = SwipeTuning.DEFAULT,
+                onDirection = { fired = it },
+                onTouchEvent = { events += it },
+            )
+        }
+        rule.onNodeWithTag("trackpad").performTouchInput {
+            val slop = viewConfiguration.touchSlop
+            down(center)
+            moveBy(Offset(slop + 30f, 0f)) // classified as a drag
+            moveBy(Offset(40f, 0f))
+            cancel() // ancestor/gesture cancellation
+        }
+        rule.waitForIdle()
+        assertNull(fired, "a cancelled gesture must not fire a direction")
+        assertEquals(
+            1,
+            events.filterIsInstance<TouchEvent.Move>()
+                .count { it.phase == TouchPhase.Release },
+            "cancel must synthesize exactly one terminal Release (engine.onUp): $events",
+        )
     }
 }

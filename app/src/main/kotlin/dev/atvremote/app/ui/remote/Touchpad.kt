@@ -14,6 +14,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -22,6 +23,8 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalViewConfiguration
@@ -33,6 +36,7 @@ import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.app.ui.theme.Brushes
 import dev.atvremote.app.ui.theme.DesignTokens
 import dev.atvremote.protocol.RemoteButton
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlin.math.atan2
 import kotlin.math.hypot
@@ -92,18 +96,42 @@ private fun RemoteButton.glowEdge(): Brushes.GlowEdge? = when (this) {
  *    tap-zone [onDirection].
  *
  * The engine is driven on every gesture (down/move + tick) so its slop/long-
- * press accounting stays consistent; on finger-up the classification decides
- * which path "wins": a drag flushes the engine's terminal events + inertia, a
- * tap drops them and fires the design's zone direction instead (so the
- * SwipeEngine `Tap` and the zone press can never double-fire).
+ * press accounting stays consistent, but its outputs are **withheld** until
+ * the gesture is classified: on finger-up the classification decides which
+ * path "wins". The precise invariant (enforced by [TouchpadGesture]):
+ *
+ *  - a **tap** delivers **exactly one** [onDirection] (the [zoneFor] zone) and
+ *    **zero** [onTouchEvent] — the engine's own `Tap`/`LongPress`/
+ *    `DirectionalStep` are buffered while unclassified and discarded on a tap,
+ *    so a slow in-zone press can no longer fire a `LongPress` *and* a zone
+ *    press (no undocumented double input);
+ *  - a **drag** delivers the SwipeEngine stream (`Move(Press)` + `Move(Hold)`
+ *    + terminal `Move(Release)` + inertia) via [onTouchEvent] and **zero**
+ *    [onDirection]. `Move` frames are not streamed to the VM for a press that
+ *    later turns out to be a tap (they are buffered until the slop crossing).
+ *
+ * Termination is guaranteed exactly once. On a normal up OR a cancellation
+ * (an ancestor consumes the pointer, or the composable leaves composition
+ * mid-gesture) the engine receives `onUp` exactly once and — for a drag — a
+ * terminal `Move(Release)` reaches [onTouchEvent], so the VM/device never sees
+ * a virtual finger that never lifts; a cancelled drag drops inertia, a
+ * cancelled tap fires nothing.
+ *
+ * Multi-touch safe: the gesture tracks the pointer id latched from
+ * `awaitFirstDown()`; a second finger cannot hijack `positionChange()` nor keep
+ * the gesture from terminating.
  *
  * Slop source: Compose's [LocalViewConfiguration.touchSlop] (the platform
  * `ViewConfiguration` slop, ~the same threshold Compose's own `detectDrag*`
  * uses) — accumulated as the unsigned path length since touch-down; once it
  * exceeds slop the gesture is irrevocably a drag for the rest of that press.
+ * Timestamps are the monotonic pointer `uptimeMillis` (SwipeEngine assumes
+ * monotonic time; wall-clock can jump).
  *
  * VM-agnostic: callers (T3) wire [onDirection] → `vm.pressButton(...)` and
- * [onTouchEvent] → `vm.onTouchEvent(...)`.
+ * [onTouchEvent] → `vm.onTouchEvent(...)`. Both are read through
+ * [rememberUpdatedState] so the long-lived gesture loop always invokes the
+ * latest lambdas (T3 re-creates them each recomposition).
  */
 @Composable
 fun Touchpad(
@@ -118,6 +146,13 @@ fun Touchpad(
     // bumped on every tap so a rapid re-tap restarts the 180ms window.
     var activeNonce by remember { mutableStateOf(0) }
     val touchSlopPx = LocalViewConfiguration.current.touchSlop
+
+    // C1: the gesture loop below is started once (keyed on `tuning`) and lives
+    // across recompositions; T3 re-creates these lambdas every recomposition.
+    // Reading them through rememberUpdatedState makes the loop always invoke
+    // the LATEST instances instead of the ones captured at first composition.
+    val onDirectionState = rememberUpdatedState(onDirection)
+    val onTouchEventState = rememberUpdatedState(onTouchEvent)
 
     LaunchedEffect(activeNonce) {
         if (active != null) {
@@ -187,62 +222,80 @@ fun Touchpad(
                     )
                 }
                 .pointerInput(tuning) {
+                    // pointerInput is keyed on `tuning` only (a legitimate
+                    // engine rebuild); onDirection/onTouchEvent are read live
+                    // via rememberUpdatedState (C1) so this long-lived loop
+                    // never invokes stale lambdas.
                     val w = size.width.toFloat()
                     val h = size.height.toFloat()
-                    val cx = w / 2f
-                    val cy = h / 2f
                     val engine = SwipeEngine(tuning, w, h)
                     awaitPointerEventScope {
                         while (true) {
                             val down = awaitFirstDown()
-                            val t0 = System.currentTimeMillis()
-                            val downPos = down.position
-                            engine.onDown(downPos.x, downPos.y, t0).forEach(onTouchEvent)
-                            var totalDx = 0f
-                            var totalDy = 0f
-                            var isDrag = false
-                            var dragging = true
-                            while (dragging) {
-                                val ev = awaitPointerEvent()
-                                val ch = ev.changes.first()
-                                val now = System.currentTimeMillis()
-                                engine.onTick(now).forEach(onTouchEvent)
-                                if (ch.pressed) {
-                                    val d = ch.positionChange()
-                                    totalDx += d.x
-                                    totalDy += d.y
-                                    if (!isDrag && hypot(totalDx, totalDy) > touchSlopPx) {
-                                        isDrag = true
-                                    }
-                                    engine.onMove(ch.position.x, ch.position.y, now)
-                                        .forEach(onTouchEvent)
-                                    ch.consume()
-                                } else {
-                                    val upEvents =
-                                        engine.onUp(ch.position.x, ch.position.y, now)
-                                    if (isDrag) {
-                                        // Drag wins: flush the engine's
-                                        // terminal stream + inertia; no zone.
-                                        upEvents.forEach(onTouchEvent)
-                                        var n = now + 8L
-                                        var guard = 0
-                                        while (engine.inertiaActive && guard < 240) {
-                                            engine.onInertiaFrame(n).forEach(onTouchEvent)
-                                            n += 8L; guard++
-                                        }
-                                    } else {
-                                        // Discrete tap wins: the engine's
-                                        // Tap/Move(Release) are intentionally
-                                        // dropped so the zone press is the
-                                        // single source of truth for a tap.
-                                        val btn = zoneFor(downPos.x - cx, downPos.y - cy, w)
-                                        active = btn
-                                        activeNonce++
-                                        onDirection(btn)
-                                    }
-                                    ch.consume()
-                                    dragging = false
+                            // C2: latch the tracked pointer id so a second
+                            // finger can never hijack positionChange()/pressed.
+                            val pid = down.id
+                            val gesture = TouchpadGesture(engine, w, h, touchSlopPx)
+
+                            fun apply(outcome: TouchpadGesture.Outcome) {
+                                outcome.events.forEach { onTouchEventState.value(it) }
+                                outcome.direction?.let { btn ->
+                                    active = btn
+                                    activeNonce++
+                                    onDirectionState.value(btn)
                                 }
+                            }
+
+                            // C3: if the awaitPointerEventScope coroutine is
+                            // cancelled (composable leaves composition / an
+                            // ancestor cancels the gesture) while a touch is
+                            // in progress, synthesize a clean terminal so the
+                            // engine still gets onUp and a drag's Release
+                            // reaches the VM — then rethrow.
+                            var lastUptime = down.uptimeMillis
+                            try {
+                                apply(gesture.onDown(down.position.x, down.position.y, down.uptimeMillis))
+                                var dragging = true
+                                while (dragging) {
+                                    // Main pass so an ancestor that consumes
+                                    // the change in an earlier pass is seen by
+                                    // us as a cancellation, not a phantom move.
+                                    val ev = awaitPointerEvent(PointerEventPass.Main)
+                                    val ch = ev.changes.firstOrNull { it.id == pid }
+                                        ?: continue // C2/I3: our pointer absent
+                                    lastUptime = ch.uptimeMillis
+                                    val up = !ch.pressed || ch.changedToUp()
+                                    // We only consume our own change AFTER this
+                                    // check (move/up branches below), so an
+                                    // already-consumed change here means an
+                                    // ancestor claimed it — treat as a cancel
+                                    // (C3): clean terminal Release, no inertia.
+                                    if (ch.isConsumed && !up) {
+                                        apply(gesture.onCancel(ch.uptimeMillis))
+                                        dragging = false
+                                    } else if (up) {
+                                        apply(gesture.onUp(ch.position.x, ch.position.y, ch.uptimeMillis))
+                                        ch.consume()
+                                        dragging = false
+                                    } else {
+                                        val d = ch.positionChange()
+                                        apply(
+                                            gesture.onMove(
+                                                ch.position.x, ch.position.y,
+                                                d.x, d.y, ch.uptimeMillis,
+                                            ),
+                                        )
+                                        ch.consume()
+                                    }
+                                }
+                            } catch (c: CancellationException) {
+                                // The invariant: after ANY gesture end (normal
+                                // up OR cancel) the engine has had onUp exactly
+                                // once and a drag's Release reached the VM.
+                                if (gesture.inProgress) {
+                                    apply(gesture.onCancel(lastUptime))
+                                }
+                                throw c
                             }
                         }
                     }
