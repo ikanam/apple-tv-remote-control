@@ -5,6 +5,7 @@ import dev.atvremote.app.conn.ConnectionManager
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.WifiStatus
 import dev.atvremote.app.data.CredentialStore
+import dev.atvremote.app.data.UiSettingsStore
 import dev.atvremote.app.haptics.Haptics
 
 /**
@@ -31,6 +32,7 @@ import dev.atvremote.app.haptics.Haptics
  */
 class AppGraph(appContext: Context) {
     val credentialStore by lazy { CredentialStore(appContext) }
+    val uiSettingsStore by lazy { UiSettingsStore(appContext) }
     val haptics = Haptics(appContext)
     val connectionManager by lazy { ConnectionManager(credentialStore = credentialStore) }
     val multicastLock by lazy { MulticastLockHolder(appContext) }

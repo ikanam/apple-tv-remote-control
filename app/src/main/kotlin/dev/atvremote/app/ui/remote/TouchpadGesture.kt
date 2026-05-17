@@ -1,10 +1,10 @@
 package dev.atvremote.app.ui.remote
 
-import dev.atvremote.app.swipe.SwipeEngine
 import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.protocol.RemoteButton
-import dev.atvremote.protocol.TouchPhase
+import kotlin.math.abs
 import kotlin.math.hypot
+import kotlin.math.min
 
 /**
  * Pure, Compose-free reducer for a single Touchpad press → release/cancel.
@@ -22,42 +22,38 @@ import kotlin.math.hypot
  *
  *  - **Discrete tap** (finger up before the unsigned path length exceeds the
  *    host touch-slop): delivers **exactly one** [Outcome.direction] (the
- *    [zoneFor] zone of the down point) and **zero** [TouchEvent]s to the VM —
- *    the [SwipeEngine]'s own `Tap`/`LongPress`/`DirectionalStep` are buffered
- *    while unclassified and **discarded** on a tap classification (I1: a slow
- *    in-zone press can no longer emit a `LongPress` *and* a zone press).
- *  - **Drag** (path length exceeds slop): delivers the [SwipeEngine] stream
- *    (buffered `Move(Press)` + drag/inertia `Move(Hold)` frames, **closed by
- *    a terminal `Move(Release)` as the very last event**) via [Outcome.events]
- *    and **zero** direction.
+ *    [zoneFor] zone of the down point) and **zero** [TouchEvent]s to the VM.
+ *  - **Drag** (path length exceeds slop): delivers deterministic
+ *    [TouchEvent.DirectionalStep] events based on the drag's dominant axis,
+ *    with repeat steps as the finger keeps moving. This is intentionally HID
+ *    navigation, not touch streaming: tvOS/app touch inertia can turn
+ *    a visually-left swipe into a right rebound, while button steps are a
+ *    stable focus-navigation contract.
  *
  * Termination is guaranteed exactly once: on a normal up **or** a cancel
  * (pointer consumed by an ancestor / composable left composition mid-gesture)
- * the [SwipeEngine] receives `onUp` exactly once and a terminal `Move(Release)`
- * reaches the VM iff the gesture had been classified as a drag (a *cancelled
- * tap* fires nothing — there is no zone press for an aborted tap, and no
- * virtual finger was ever shown to the VM because tap engine events were
- * buffered). For a cancelled **drag** the buffered stream is flushed and a
- * terminal `Move(Release)` is emitted so the VM/device never sees a virtual
- * finger that never lifts. Inertia is dropped on cancel.
+ * a *cancelled tap* fires nothing. A cancelled **drag** stops immediately; any
+ * steps already emitted are real HID presses and are not replayed or undone.
  *
  * All timestamps are the monotonic pointer `uptimeMillis` (I2) supplied by the
  * caller; this reducer never reads wall-clock time.
  *
- * NOT thread-safe (mirrors [SwipeEngine]); confine to one coroutine.
+ * NOT thread-safe; confine to one coroutine.
  */
 internal class TouchpadGesture(
-    private val engine: SwipeEngine,
     /** Touchpad box width/height in px (for the [zoneFor] center math). */
     private val widthPx: Float,
     private val heightPx: Float,
     /** Compose `LocalViewConfiguration.touchSlop`, in px. */
     private val touchSlopPx: Float,
+    /** Fraction of the smaller pad dimension per repeated HID step. */
+    private val dragStepFraction: Float = DEFAULT_DRAG_STEP_FRACTION,
+    private val longPressMs: Long = DEFAULT_LONG_PRESS_MS,
 ) {
     /**
      * What [Touchpad] should do after a reducer call.
      *
-     * @param events SwipeEngine [TouchEvent]s to forward to the VM, in order.
+     * @param events [TouchEvent]s to forward to the VM, in order.
      * @param direction a discrete tap-zone press to fire (drives the ~180ms
      *   active visual) — non-null at most once per gesture, only on a tap up.
      */
@@ -73,145 +69,197 @@ internal class TouchpadGesture(
     private var active = false
     private var downX = 0f
     private var downY = 0f
+    private var downAtMs = 0L
     private var totalDx = 0f
     private var totalDy = 0f
     private var isDrag = false
-    /** Engine outputs withheld until we know tap-vs-drag (I1). */
-    private val buffered = ArrayList<TouchEvent>()
+    private var dragAxis: DragAxis? = null
+    private var dragButton: RemoteButton? = null
+    private var dragSign = 0f
+    private var lastStepProgressPx = 0f
+    /** Set once a centre long-press has been delivered *during* the hold
+     *  ([onHoldTick]); the rest of that touch is then inert (hunt #2 — the
+     *  long-press is a discrete event, like a hardware remote, not gated on
+     *  finger-up). */
+    private var longPressDelivered = false
+    private var longPressSuppressed = false
 
     /** True between [onDown] and a terminal [onUp]/[onCancel]. */
     val inProgress: Boolean get() = active
 
+    /** The caller should keep polling [onHoldTick] only while this holds:
+     *  in progress, not yet a drag, long-press not already delivered. */
+    val canLongPress: Boolean
+        get() = active && !isDrag && !longPressDelivered && !longPressSuppressed
+
     /**
      * Finger down at the tracked pointer's position/time. Resets per-gesture
-     * state and primes the engine; the engine's Press (or edge
-     * `DirectionalStep`) is buffered, not forwarded (I1).
+     * state. Nothing is forwarded until the reducer knows tap-vs-drag-vs-hold.
      */
     fun onDown(x: Float, y: Float, uptimeMs: Long): Outcome {
         active = true
         downX = x; downY = y
+        downAtMs = uptimeMs
         totalDx = 0f; totalDy = 0f
         isDrag = false
-        buffered.clear()
-        buffered += engine.onDown(x, y, uptimeMs)
+        dragAxis = null
+        dragButton = null
+        dragSign = 0f
+        lastStepProgressPx = 0f
+        longPressDelivered = false
+        longPressSuppressed = false
         return Outcome.NONE
+    }
+
+    /**
+     * Periodic "is the finger still held?" poll the [Touchpad] loop drives
+     * while [canLongPress] (a perfectly still finger emits NO Compose pointer
+     * events). On the centre (Select) zone, crossing [longPressMs] delivers
+     * `LongPress` **during** the hold (→ `click(Hold)`), once, and marks the
+     * rest of the touch inert. A directional-zone long hold is left alone
+     * (stays its zone tap on up).
+     */
+    fun onHoldTick(uptimeMs: Long): Outcome {
+        return maybeLongPress(uptimeMs)
     }
 
     /**
      * A move sample for the **tracked** pointer (caller has already resolved
      * the latched pointer id — C2). [dx]/[dy] are this sample's delta
      * ([androidx.compose.ui.input.pointer.PointerInputChange.positionChange]).
-     * Returns the engine Move stream only once classified as a drag — a
-     * not-yet-drag press never streams Moves to the VM (I1).
+     * Returns deterministic directional steps only once classified as a drag —
+     * a not-yet-drag press never streams Moves or steps to the VM (I1).
      */
+    @Suppress("UNUSED_PARAMETER")
     fun onMove(x: Float, y: Float, dx: Float, dy: Float, uptimeMs: Long): Outcome {
         if (!active) return Outcome.NONE
+        // Once a long-press fired mid-hold the touch is spent: ignore further
+        // motion so a post-long-press drift can't open a phantom drag whose
+        // Release the longPressDelivered onUp would then swallow (hunt #2).
+        if (longPressDelivered) return Outcome.NONE
         totalDx += dx
         totalDy += dy
-        val crossed = !isDrag && hypot(totalDx, totalDy) > touchSlopPx
-        if (crossed) isDrag = true
-        val tick = engine.onTick(uptimeMs)
-        val moved = engine.onMove(x, y, uptimeMs)
+        if (!isDrag && hypot(totalDx, totalDy) > touchSlopPx) {
+            isDrag = true
+            startDirectionalDrag()
+        }
         return if (isDrag) {
-            // Drag: flush anything buffered before the slop crossing, then
-            // stream live frames.
-            val out = ArrayList<TouchEvent>(buffered.size + tick.size + moved.size)
-            if (buffered.isNotEmpty()) { out += buffered; buffered.clear() }
-            out += tick
-            out += moved
-            Outcome(events = out)
+            // Focus navigation must be deterministic. The physical drag emits
+            // HID direction presses, so tvOS/app content cannot reinterpret a
+            // leftward stream as a right rebound.
+            Outcome(events = directionalDragSteps())
         } else {
-            // Still unclassified: withhold (a tap must deliver zero events).
-            buffered += tick
-            buffered += moved
-            Outcome.NONE
+            maybeLongPress(uptimeMs)
         }
     }
 
     /**
      * The tracked pointer lifted. Classifies the gesture:
-     *  - **tap** → discard buffered engine events, drive `engine.onUp` (so the
-     *    engine's own bookkeeping closes — its Tap/Release are dropped), fire
-     *    exactly the [zoneFor] direction.
-     *  - **drag** → flush buffered, then the inertia glide `Move(Hold)`
-     *    frames, then the terminal `Move(Release)` LAST (the stream always
-     *    ends finger-up); no direction.
+     *  - **tap** → fire exactly the [zoneFor] direction.
+     *  - **stationary long-hold on the centre (Select) zone** → route it as a
+     *    touch event (no zone press) so a long press on OK (→ `click(Hold)`)
+     *    differs from a tap (hunt #2).
+     *  - **drag** → close engine bookkeeping and emit no extra events; any HID
+     *    steps were already emitted during [onMove].
      */
     fun onUp(x: Float, y: Float, uptimeMs: Long): Outcome {
         if (!active) return Outcome.NONE
         active = false
-        val tick = engine.onTick(uptimeMs)
-        val up = engine.onUp(x, y, uptimeMs)
-        if (isDrag) {
-            val out = ArrayList<TouchEvent>()
-            if (buffered.isNotEmpty()) { out += buffered }
-            out += tick
-            // Hold the engine's terminal Move(Release) back: the inertia
-            // glide must be emitted FIRST and the Release LAST so the stream
-            // always ends finger-up. The previous order (Release, then
-            // inertia Move(Hold) frames — onInertiaFrame never closes with a
-            // Release) left the device's virtual finger stuck "down" after
-            // any flick (slow drags don't arm inertia → intermittent).
-            val release = up.lastOrNull {
-                it is TouchEvent.Move && it.phase == TouchPhase.Release
-            } as TouchEvent.Move?
-            out += up.filterNot { it === release }
-            var n = uptimeMs + INERTIA_FRAME_MS
-            var guard = 0
-            var lastGlide: TouchEvent.Move? = null
-            while (engine.inertiaActive && guard < INERTIA_MAX_FRAMES) {
-                val frame = engine.onInertiaFrame(n)
-                out += frame
-                (frame.lastOrNull() as? TouchEvent.Move)?.let { lastGlide = it }
-                n += INERTIA_FRAME_MS
-                guard++
-            }
-            // Terminal Release LAST — at the glide-final position (no
-            // snap-back); fall back to the lift-position Release when no
-            // inertia ran (a plain slow drag).
-            val terminal = lastGlide
-                ?.let { TouchEvent.Move(it.x, it.y, TouchPhase.Release) }
-                ?: release
-            if (terminal != null) out += terminal
-            buffered.clear()
-            return Outcome(events = out)
+        if (longPressDelivered) {
+            // The centre long-press already fired *during* the hold
+            // ([onHoldTick]); emit nothing — no second LongPress and no tap.
+            return Outcome.NONE
         }
-        // Discrete tap: the engine's discrete outputs are intentionally
-        // dropped so the zone press is the single source of truth (I1).
-        buffered.clear()
+        if (isDrag) {
+            return Outcome.NONE
+        }
+        // Non-drag. The zone press is the single source of truth (I1) except
+        // a stationary long-hold on the centre (Select) zone. Directional
+        // zones are unaffected — a long hold there stays a tap.
         val btn = zoneFor(downX - widthPx / 2f, downY - heightPx / 2f, widthPx)
+        if (btn == RemoteButton.Select && uptimeMs - downAtMs >= longPressMs) {
+            return Outcome(events = listOf(TouchEvent.LongPress))
+        }
         return Outcome(direction = btn)
     }
 
     /**
      * The gesture was cancelled (pointer consumed by an ancestor, or the
-     * composable left composition mid-gesture). Guarantees the engine is
-     * closed with `onUp` exactly once so a virtual finger never hangs (C3):
-     *  - cancelled **drag** → flush buffered + a terminal `Move(Release)`
-     *    (NO inertia — a cancel must not glide), no direction.
+     * composable left composition mid-gesture):
+     *  - cancelled **drag** → close engine bookkeeping, no new direction and
+     *    no trailing output.
      *  - cancelled **tap**  → drop everything (no zone press for an aborted
-     *    tap; nothing was ever shown to the VM since taps are buffered), but
-     *    still call `engine.onUp` to close engine state.
+     *    tap).
      *
-     * Uses the last known position for the synthesized release.
+     * Uses the last known position for the terminal release.
      */
     fun onCancel(uptimeMs: Long): Outcome {
         if (!active) return Outcome.NONE
         active = false
-        val up = engine.onUp(downX + totalDx, downY + totalDy, uptimeMs)
-        if (isDrag) {
-            val out = ArrayList<TouchEvent>()
-            if (buffered.isNotEmpty()) { out += buffered }
-            out += up
-            buffered.clear()
-            return Outcome(events = out)
-        }
-        buffered.clear()
         return Outcome.NONE
     }
 
+    private fun maybeLongPress(uptimeMs: Long): Outcome {
+        if (!canLongPress) return Outcome.NONE
+        if (uptimeMs - downAtMs < longPressMs) return Outcome.NONE
+        val btn = zoneFor(downX - widthPx / 2f, downY - heightPx / 2f, widthPx)
+        if (btn != RemoteButton.Select) {
+            longPressSuppressed = true
+            return Outcome.NONE
+        }
+        longPressDelivered = true
+        return Outcome(events = listOf(TouchEvent.LongPress))
+    }
+
+    private fun startDirectionalDrag() {
+        val axisTieEpsilonPx = min(widthPx, heightPx) * AXIS_TIE_EPSILON_FRACTION
+        val horizontal = abs(totalDx) + axisTieEpsilonPx >= abs(totalDy)
+        dragAxis = if (horizontal) DragAxis.Horizontal else DragAxis.Vertical
+        dragSign = if ((if (horizontal) totalDx else totalDy) >= 0f) 1f else -1f
+        dragButton = when {
+            horizontal && dragSign > 0f -> RemoteButton.Right
+            horizontal -> RemoteButton.Left
+            dragSign > 0f -> RemoteButton.Down
+            else -> RemoteButton.Up
+        }
+        lastStepProgressPx = 0f
+    }
+
+    private fun directionalDragSteps(): List<TouchEvent> {
+        val axis = dragAxis ?: return emptyList()
+        val button = dragButton ?: return emptyList()
+        val progress = when (axis) {
+            DragAxis.Horizontal -> totalDx * dragSign
+            DragAxis.Vertical -> totalDy * dragSign
+        }
+        if (progress <= 0f) return emptyList()
+
+        val out = ArrayList<TouchEvent>()
+        var nextStepAtPx = if (lastStepProgressPx == 0f) {
+            touchSlopPx
+        } else {
+            lastStepProgressPx + dragStepPx()
+        }
+        while (progress >= nextStepAtPx) {
+            out += TouchEvent.DirectionalStep(button)
+            lastStepProgressPx = nextStepAtPx
+            nextStepAtPx += dragStepPx()
+        }
+        return out
+    }
+
+    private fun dragStepPx(): Float =
+        (min(widthPx, heightPx) * dragStepFraction.coerceAtLeast(MIN_DRAG_STEP_FRACTION))
+            .coerceAtLeast(touchSlopPx)
+
+    private enum class DragAxis { Horizontal, Vertical }
+
     private companion object {
-        const val INERTIA_FRAME_MS = 8L
-        const val INERTIA_MAX_FRAMES = 240
+        /** Roughly halves the old app-to-app travel while keeping repeats deliberate. */
+        private const val DEFAULT_DRAG_STEP_FRACTION = 0.18f
+        private const val MIN_DRAG_STEP_FRACTION = 0.05f
+        private const val DEFAULT_LONG_PRESS_MS = 450L
+        /** Stabilizes exact 45-degree drags against tiny float/sample jitter. */
+        private const val AXIS_TIE_EPSILON_FRACTION = 0.01f
     }
 }

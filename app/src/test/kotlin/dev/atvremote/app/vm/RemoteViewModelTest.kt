@@ -5,7 +5,6 @@ import dev.atvremote.app.testutil.FakeSession
 import dev.atvremote.protocol.InputAction
 import dev.atvremote.protocol.MediaCommand
 import dev.atvremote.protocol.RemoteButton
-import dev.atvremote.protocol.TouchPhase
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -32,31 +31,15 @@ class RemoteViewModelTest {
     @BeforeTest fun setUp() = Dispatchers.setMain(dispatcher)
     @AfterTest fun tearDown() = Dispatchers.resetMain()
 
-    private fun vm(session: FakeSession, connected: Boolean = true): Pair<RemoteViewModel, MutableList<String>> {
+    private fun vm(session: FakeSession): Pair<RemoteViewModel, MutableList<String>> {
         val haptics = mutableListOf<String>()
         val vm = RemoteViewModel(
             sessionProvider = { session },
-            isConnected = { connected },
             onTap = { haptics += "tap" },
             onEdge = { haptics += "edge" },
             onSelect = { haptics += "select" },
         )
         return vm to haptics
-    }
-
-    @Test fun moveEventDrivesSessionTouch() = runTest {
-        val s = FakeSession()
-        val (vm, _) = vm(s)
-        vm.onTouchEvent(TouchEvent.Move(120, 880, TouchPhase.Press))
-        vm.onTouchEvent(TouchEvent.Move(300, 500, TouchPhase.Hold))
-        vm.onTouchEvent(TouchEvent.Move(300, 500, TouchPhase.Release))
-        dispatcher.scheduler.advanceUntilIdle()
-        assertEquals(
-            listOf(Triple(120, 880, TouchPhase.Press),
-                    Triple(300, 500, TouchPhase.Hold),
-                    Triple(300, 500, TouchPhase.Release)),
-            s.touches,
-        )
     }
 
     @Test fun tapEmitsSingleTapClickAndHaptic() = runTest {
@@ -87,14 +70,6 @@ class RemoteViewModelTest {
             s.buttons,
         )
         assertTrue(h.contains("edge"))
-    }
-
-    @Test fun swipeMovesDroppedWhileNotConnected() = runTest {
-        val s = FakeSession()
-        val (vm, _) = vm(s, connected = false)
-        vm.onTouchEvent(TouchEvent.Move(500, 500, TouchPhase.Hold))
-        dispatcher.scheduler.advanceUntilIdle()
-        assertTrue(s.touches.isEmpty())
     }
 
     @Test fun buttonAndVolumeAndMediaMapToProtocol() = runTest {
@@ -143,4 +118,5 @@ class RemoteViewModelTest {
             s.buttons,
         )
     }
+
 }

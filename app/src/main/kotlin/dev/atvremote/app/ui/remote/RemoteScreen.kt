@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -32,11 +34,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Text
@@ -54,6 +61,13 @@ import dev.atvremote.app.ui.theme.Brushes
 import dev.atvremote.app.ui.theme.DesignTokens
 import dev.atvremote.app.vm.KeyboardViewModel
 import dev.atvremote.app.vm.RemoteViewModel
+
+internal object IphoneRemoteLayoutMetrics {
+    val HorizontalPadding = 14.dp
+    val TouchToControlsGap = 28.dp
+    val BottomPadding = 32.dp
+    val BottomControlsHeight = 172.dp
+}
 
 /**
  * Screen 1 — the Apple-TV remote — ported 1:1 from `remote.jsx:279-370`,
@@ -92,6 +106,7 @@ fun RemoteScreen(
     onSwitchDevice: () -> Unit,
     onOpenSettings: () -> Unit = {},
     tuning: SwipeTuning = SwipeTuning.DEFAULT,
+    layoutStyle: RemoteLayoutStyle = RemoteLayoutStyle.Physical,
     haptics: Haptics? = null,
     keyboardProbe: suspend () -> String = { "" },
     connectionBanner: String? = null,
@@ -113,6 +128,19 @@ fun RemoteScreen(
     val overlayVisible = localKbOpen || kb.visible
 
     Box(modifier = modifier.fillMaxSize().background(bg)) {
+        if (layoutStyle == RemoteLayoutStyle.Iphone) {
+            IphoneRemoteLayout(
+                remoteVm = remoteVm,
+                deviceName = deviceName,
+                onSwitchDevice = onSwitchDevice,
+                tuning = tuning,
+                kbReady = kbReady,
+                onOpenKeyboard = { localKbOpen = true },
+                onOpenSettings = onOpenSettings,
+                haptics = haptics,
+                connectionBanner = connectionBanner,
+            )
+        } else {
         // Immersive: the background Box is full-bleed (its gradient flows
         // behind the transparent status bar); only this content column is
         // statusBarsPadding()-inset so the bar blends in with no flat band.
@@ -219,14 +247,12 @@ fun RemoteScreen(
             }
 
             // --- center: touchpad + grid — remote.jsx:323-365 -------------
-            // remote.jsx's center is `flex:1; justifyContent:center`. On a
-            // normal phone there is ample room so it simply centers. To stay
-            // robust on a short viewport (and so the layout never collapses
-            // later rows to zero height under a tight height constraint),
-            // the centered block lives in a vertical scroll with a min-height
-            // == the available height: tall enough ⇒ identical centered design;
-            // too short ⇒ it scrolls instead of clipping. No visual change on
-            // a real device.
+            // remote.jsx's center was `justifyContent:center`; owner asked for
+            // the (now ×1.2 larger) touchpad to sit nearer the top, so this is
+            // Arrangement.Top with a small lead gap rather than vertically
+            // centered. Still wrapped in a min-height vertical scroll so a
+            // short viewport scrolls instead of clipping (the bigger pad makes
+            // that more likely) — no clipping on a normal phone.
             BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 val viewportH = maxHeight
                 Column(
@@ -234,8 +260,8 @@ fun RemoteScreen(
                         .fillMaxWidth()
                         .verticalScroll(rememberScrollState())
                         .heightIn(min = viewportH)
-                        .padding(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 24.dp),
-                    verticalArrangement = Arrangement.Center,
+                        .padding(start = 20.dp, end = 20.dp, top = 16.dp, bottom = 24.dp),
+                    verticalArrangement = Arrangement.Top,
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                 Touchpad(
@@ -303,6 +329,7 @@ fun RemoteScreen(
                 } // end centered scroll Column
             } // end BoxWithConstraints
         }
+        }
 
         // --- KeyboardOverlay — remote.jsx:367 (composited on top) ----------
         if (overlayVisible) {
@@ -313,6 +340,300 @@ fun RemoteScreen(
                 // field focused (kb.visible) the overlay stays — the VM owns
                 // that; do not fight it.
                 onClose = { localKbOpen = false },
+            )
+        }
+    }
+}
+
+@Composable
+private fun IphoneRemoteLayout(
+    remoteVm: RemoteViewModel,
+    deviceName: String,
+    onSwitchDevice: () -> Unit,
+    tuning: SwipeTuning,
+    kbReady: Boolean,
+    onOpenKeyboard: () -> Unit,
+    onOpenSettings: () -> Unit,
+    haptics: Haptics?,
+    connectionBanner: String?,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .statusBarsPadding()
+            .padding(horizontal = IphoneRemoteLayoutMetrics.HorizontalPadding),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(68.dp)
+                .padding(top = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IphoneTopIconButton(
+                contentDescription = "Keyboard",
+                enabled = kbReady,
+                onClick = { if (kbReady) onOpenKeyboard() },
+            ) {
+                IconKeyboard(size = 22.dp, color = Color(0xFFF5F5F7), strokeWidth = 1.7f)
+            }
+
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(role = Role.Button, onClick = onSwitchDevice)
+                    .padding(horizontal = 0.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .clickable(role = Role.Button, onClick = onOpenSettings)
+                        .semantics { contentDescription = "Settings" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconSettings(size = 21.dp, color = Color(0xFFF5F5F7), strokeWidth = 1.5f)
+                }
+
+                Text(
+                    text = deviceName,
+                    color = Color(0xFFF5F5F7),
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    modifier = Modifier.size(44.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconChevronDown(
+                        size = 12.dp,
+                        color = DesignTokens.TextMuted50,
+                        strokeWidth = 1.4f,
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = { remoteVm.wake(); haptics?.tap() },
+                            onLongPress = { remoteVm.sleep(); haptics?.select() },
+                        )
+                    }
+                    .semantics { contentDescription = "Power" },
+                contentAlignment = Alignment.Center,
+            ) {
+                IconPower(size = 24.dp, color = Color(0xFFF5F5F7), strokeWidth = 1.8f)
+            }
+        }
+
+        connectionBanner?.let {
+            Text(
+                text = it,
+                color = DesignTokens.TextMuted55,
+                fontSize = 13.sp,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = IphoneRemoteLayoutMetrics.BottomPadding),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                IphoneTouchArea(
+                    tuning = tuning,
+                    onDirection = { remoteVm.pressButton(it) },
+                    onTouchEvent = { remoteVm.onTouchEvent(it) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(0.773f),
+                )
+
+                Spacer(Modifier.height(IphoneRemoteLayoutMetrics.TouchToControlsGap))
+
+                IphoneBottomControls(remoteVm = remoteVm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun IphoneBottomControls(remoteVm: RemoteViewModel) {
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(IphoneRemoteLayoutMetrics.BottomControlsHeight),
+    ) {
+        val narrow = maxWidth < 314.dp
+        val compact = maxWidth < 380.dp
+        val side = when {
+            narrow -> 64.dp
+            compact -> 72.dp
+            else -> 80.dp
+        }
+        val center = when {
+            narrow -> 132.dp
+            compact -> 150.dp
+            else -> 170.dp
+        }
+        val gap = when {
+            narrow -> 18.dp
+            maxWidth < 330.dp -> 10.dp
+            compact -> 16.dp
+            else -> 24.dp
+        }
+        val controlsHeight = when {
+            narrow -> 140.dp
+            compact -> 156.dp
+            else -> 172.dp
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .fillMaxWidth()
+                .height(controlsHeight)
+                .testTag("iphone-bottom-controls"),
+            horizontalArrangement = Arrangement.spacedBy(gap, Alignment.CenterHorizontally),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(
+                modifier = Modifier.width(side),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                IphoneRoundButton(
+                    size = side,
+                    contentDescription = "TV/Home",
+                    onClick = { remoteVm.home() },
+                ) { IconTV(size = 26.dp, color = Color(0xFFF5F5F7), strokeWidth = 1.7f) }
+                IphoneRoundButton(
+                    size = side,
+                    contentDescription = "Play/Pause",
+                    onClick = { remoteVm.playPause() },
+                ) { IconPlayPause(size = 27.dp, color = Color(0xFFF5F5F7)) }
+            }
+            IphoneRoundButton(
+                size = center,
+                contentDescription = "Back",
+                onClick = { remoteVm.menu() },
+            ) { IconBack(size = 60.dp, color = Color(0xFFF5F5F7), strokeWidth = 1.15f) }
+            IphoneChannelPill(
+                width = side,
+                height = center,
+                onUp = { remoteVm.volumeUp() },
+                onDown = { remoteVm.volumeDown() },
+            )
+        }
+    }
+}
+
+@Composable
+private fun IphoneTopIconButton(
+    contentDescription: String,
+    onClick: () -> Unit,
+    enabled: Boolean = true,
+    size: Dp = 44.dp,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(size)
+            .alpha(if (enabled) 1f else 0.35f)
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+@Composable
+private fun IphoneRoundButton(
+    size: Dp,
+    contentDescription: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .size(size)
+            .clip(CircleShape)
+            .background(Color(0xFF1C1C1E))
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics { this.contentDescription = contentDescription },
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+@Composable
+private fun IphoneChannelPill(
+    width: Dp,
+    height: Dp,
+    onUp: () -> Unit,
+    onDown: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier
+            .width(width)
+            .height(height)
+            .clip(RoundedCornerShape(40.dp))
+            .background(Color(0xFF1C1C1E)),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clickable(role = Role.Button, onClick = onUp)
+                .semantics { contentDescription = "Volume Up" },
+            contentAlignment = Alignment.Center,
+        ) {
+            IconChevronDown(
+                size = 22.dp,
+                color = Color(0xFFF5F5F7),
+                strokeWidth = 2.0f,
+                modifier = Modifier.graphicsLayer(rotationZ = 180f),
+            )
+        }
+        Text(
+            text = "CH",
+            color = Color(0xFFF5F5F7),
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f)
+                .clickable(role = Role.Button, onClick = onDown)
+                .semantics { contentDescription = "Volume Down" },
+            contentAlignment = Alignment.Center,
+        ) {
+            IconChevronDown(
+                size = 22.dp,
+                color = Color(0xFFF5F5F7),
+                strokeWidth = 2.0f,
             )
         }
     }

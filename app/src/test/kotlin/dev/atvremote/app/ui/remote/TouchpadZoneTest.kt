@@ -9,7 +9,6 @@ import androidx.compose.ui.test.performTouchInput
 import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.protocol.RemoteButton
-import dev.atvremote.protocol.TouchPhase
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -161,11 +160,11 @@ class TouchpadZoneTest {
         assertEquals(1, dirCount, "a tap must fire exactly one onDirection")
         assertTrue(
             events.isEmpty(),
-            "a tap must deliver ZERO onTouchEvent (no SwipeEngine leak): $events",
+            "a tap must deliver ZERO onTouchEvent: $events",
         )
     }
 
-    @Test fun dragBeyondSlopFeedsSwipeEngineAndNeverFiresDirection() {
+    @Test fun dragBeyondSlopEmitsDirectionalStepAndNoTapDirection() {
         var fired: RemoteButton? = null
         val events = mutableListOf<TouchEvent>()
         rule.setContent {
@@ -178,7 +177,7 @@ class TouchpadZoneTest {
         rule.onNodeWithTag("trackpad").performTouchInput {
             val slop = viewConfiguration.touchSlop
             down(center)
-            // Move clearly beyond touch-slop in a few samples.
+            // Move clearly beyond touch-slop, rightward, in a few samples.
             moveBy(Offset(slop + 8f, 0f))
             moveBy(Offset(40f, 0f))
             moveBy(Offset(40f, 0f))
@@ -186,16 +185,41 @@ class TouchpadZoneTest {
         }
         rule.waitForIdle()
         assertNull(fired, "a drag must NEVER fire a tap-zone onDirection")
-        assertTrue(events.isNotEmpty(), "a drag must feed the SwipeEngine stream")
         assertEquals(
-            1,
-            events.filterIsInstance<TouchEvent.Move>()
-                .count { it.phase == TouchPhase.Release },
-            "a drag must be closed by exactly one terminal Move(Release): $events",
+            listOf(RemoteButton.Right, RemoteButton.Right),
+            events.filterIsInstance<TouchEvent.DirectionalStep>().map { it.button },
+            "rightward drag must emit deterministic right HID steps: $events",
         )
     }
 
-    @Test fun cancelledGestureEmitsTerminatingReleaseAndNoDirection() {
+    @Test fun leftDragStartingOnRightEdgeEmitsLeftStepsAndNoTapDirection() {
+        var fired: RemoteButton? = null
+        val events = mutableListOf<TouchEvent>()
+        rule.setContent {
+            Touchpad(
+                tuning = SwipeTuning.DEFAULT,
+                onDirection = { fired = it },
+                onTouchEvent = { events += it },
+            )
+        }
+        rule.onNodeWithTag("trackpad").performTouchInput {
+            val slop = viewConfiguration.touchSlop
+            down(Offset(width * 0.95f, height / 2f))
+            moveBy(Offset(-(slop + 24f), 0f))
+            moveBy(Offset(-48f, 0f))
+            up()
+        }
+        rule.waitForIdle()
+        assertNull(fired, "edge-start drag must not fire a tap-zone direction")
+        val steps = events.filterIsInstance<TouchEvent.DirectionalStep>().map { it.button }
+        assertTrue(steps.isNotEmpty(), "edge-start left drag must emit a HID step: $events")
+        assertTrue(
+            steps.all { it == RemoteButton.Left },
+            "left drag from right edge must not emit a right step: $events",
+        )
+    }
+
+    @Test fun gestureEndedByPointerCancelTerminatesNoTapDirection() {
         var fired: RemoteButton? = null
         val events = mutableListOf<TouchEvent>()
         rule.setContent {
@@ -210,15 +234,17 @@ class TouchpadZoneTest {
             down(center)
             moveBy(Offset(slop + 30f, 0f)) // classified as a drag
             moveBy(Offset(40f, 0f))
-            cancel() // ancestor/gesture cancellation
+            cancel()
         }
         rule.waitForIdle()
-        assertNull(fired, "a cancelled gesture must not fire a direction")
-        assertEquals(
-            1,
-            events.filterIsInstance<TouchEvent.Move>()
-                .count { it.phase == TouchPhase.Release },
-            "cancel must synthesize exactly one terminal Release (engine.onUp): $events",
+        // Compose's performTouchInput cancel() delivers the pointer as
+        // !pressed, which the loop reads as a normal finger-up (same as the
+        // pre-existing behaviour) → the drag resolves with no stuck state and
+        // no crash.
+        assertNull(fired, "a drag must not fire a tap-zone direction")
+        assertTrue(
+            events.filterIsInstance<TouchEvent.DirectionalStep>().isNotEmpty(),
+            "drag should emit directional steps before pointer cancel: $events",
         )
     }
 }

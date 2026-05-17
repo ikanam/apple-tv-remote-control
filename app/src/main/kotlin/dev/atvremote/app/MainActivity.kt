@@ -14,13 +14,16 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import dev.atvremote.app.conn.ConnectionManager
 import dev.atvremote.app.conn.ConnectionService
 import dev.atvremote.app.conn.UiConnectionState
+import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.ui.AppDestinations
 import dev.atvremote.app.ui.AppNav
 import dev.atvremote.app.ui.NavRequest
+import dev.atvremote.app.ui.remote.RemoteLayoutStyle
 import dev.atvremote.app.vm.DiscoveredDevice
 import dev.atvremote.app.vm.DiscoveryViewModel
 import dev.atvremote.app.vm.KeyboardViewModel
@@ -31,6 +34,7 @@ import dev.atvremote.protocol.AppleTvDevice
 import dev.atvremote.protocol.AppleTvRemote
 import dev.atvremote.protocol.HapCredentials
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 /**
  * I3: a pairing-in-flight bound to the EXACT device its [PairingViewModel] was
@@ -90,6 +94,11 @@ class MainActivity : ComponentActivity() {
             if (!isReady) return@setContent
             val cm = binder?.manager() ?: return@setContent
             val ui by cm.uiState.collectAsState()
+            val uiScope = rememberCoroutineScope()
+            val layoutStyle by graph.uiSettingsStore.layoutStyle
+                .collectAsState(initial = RemoteLayoutStyle.Physical)
+            val dragStepFraction by graph.uiSettingsStore.dragStepFraction
+                .collectAsState(initial = SwipeTuning.DEFAULT.dragStepFraction)
 
             val discoveryVm = DiscoveryViewModel(
                 discovery = AppleTvRemote.discovery(),
@@ -97,7 +106,6 @@ class MainActivity : ComponentActivity() {
             )
             val remoteVm = RemoteViewModel(
                 sessionProvider = { cm.currentSession() },
-                isConnected = { cm.uiState.value is UiConnectionState.Connected },
                 onTap = { graph.haptics.tap() },
                 onEdge = { graph.haptics.edgeStep() },
                 onSelect = { graph.haptics.select() },
@@ -258,6 +266,14 @@ class MainActivity : ComponentActivity() {
                 multicastLock = graph.multicastLock,
                 haptics = graph.haptics,
                 keyboardProbe = { cm.currentSession()?.textGet() ?: "" },
+                layoutStyle = layoutStyle,
+                dragStepFraction = dragStepFraction,
+                onLayoutStyleChange = { style ->
+                    uiScope.launch { graph.uiSettingsStore.saveLayoutStyle(style) }
+                },
+                onDragStepFractionChange = { fraction ->
+                    uiScope.launch { graph.uiSettingsStore.saveDragStepFraction(fraction) }
+                },
                 // Real (or degraded-null) Wi-Fi info for the status pill.
                 // Passed as a lambda — NOT evaluated here. Each WifiStatus call
                 // is a main-thread WifiManager binder round-trip; evaluating it

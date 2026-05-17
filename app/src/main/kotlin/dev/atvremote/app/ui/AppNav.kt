@@ -14,7 +14,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
+import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.ui.connect.ConnectScreen
+import dev.atvremote.app.ui.remote.RemoteLayoutStyle
 import dev.atvremote.app.ui.remote.RemoteScreen
 import dev.atvremote.app.ui.theme.AtvRemoteTheme
 import dev.atvremote.app.vm.DiscoveredDevice
@@ -151,6 +153,10 @@ fun AppNav(
     haptics: dev.atvremote.app.haptics.Haptics?,
     keyboardProbe: suspend () -> String,
     wifiInfo: () -> Pair<String?, String?> = { null to null },
+    layoutStyle: RemoteLayoutStyle = RemoteLayoutStyle.Physical,
+    dragStepFraction: Float = SwipeTuning.DEFAULT.dragStepFraction,
+    onLayoutStyleChange: (RemoteLayoutStyle) -> Unit = {},
+    onDragStepFractionChange: (Float) -> Unit = {},
 ) {
     AtvRemoteTheme {
         var dest by remember {
@@ -168,6 +174,7 @@ fun AppNav(
         // null. So: outer null ⇒ first-run; outer non-null ⇒ switcher (inner
         // currentId null just means no card gets the CURRENT badge).
         var connectMode by remember { mutableStateOf<ConnectMode?>(null) }
+        val trackpadTuning = SwipeTuning(dragStepFraction = dragStepFraction)
         val disc by discoveryVm.state.collectAsState()
 
         // MainActivity's async pair/connect/back decisions navigate via this
@@ -228,7 +235,8 @@ fun AppNav(
                     dest = AppDestinations.CONNECT
                 },
                 onOpenSettings = { dest = AppDestinations.TUNING },
-                tuning = dev.atvremote.app.swipe.SwipeTuning.DEFAULT,
+                tuning = trackpadTuning,
+                layoutStyle = layoutStyle,
                 haptics = haptics,
                 keyboardProbe = keyboardProbe,
                 connectionBanner = banner,
@@ -267,7 +275,12 @@ fun AppNav(
                     onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
                 )
             }
-            AppDestinations.TUNING -> dev.atvremote.app.ui.tuning.SwipeTuningScreen()
+            AppDestinations.TUNING -> dev.atvremote.app.ui.tuning.SwipeTuningScreen(
+                layoutStyle = layoutStyle,
+                onLayoutStyleChange = onLayoutStyleChange,
+                dragStepFraction = dragStepFraction,
+                onDragStepFractionChange = onDragStepFractionChange,
+            )
         }
         }
     }

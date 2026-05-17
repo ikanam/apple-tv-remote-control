@@ -1,8 +1,11 @@
 package dev.atvremote.app.ui.remote
 
 import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertHeightIsEqualTo
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.longClick
@@ -11,6 +14,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.unit.dp
 import dev.atvremote.app.testutil.FakeSession
 import dev.atvremote.app.vm.KeyboardViewModel
 import dev.atvremote.app.vm.RemoteViewModel
@@ -48,7 +52,6 @@ class RemoteScreenUiTest {
 
     private fun fakeRemoteVm(session: FakeSession) = RemoteViewModel(
         sessionProvider = { session },
-        isConnected = { true },
         onTap = {}, onEdge = {}, onSelect = {},
     )
 
@@ -128,6 +131,68 @@ class RemoteScreenUiTest {
         rule.onNodeWithContentDescription("Settings").performClick()
         rule.waitForIdle()
         assertTrue(opened, "settings gear must invoke onOpenSettings")
+    }
+
+    @Test fun iphoneStyleShowsReferenceControlsAndUsesKeyboardTopLeft() {
+        val session = FakeSession()
+        var settingsOpened = false
+        var switched = false
+        rule.setContent {
+            RemoteScreen(
+                remoteVm = fakeRemoteVm(session),
+                keyboardVm = keyboardVm(),
+                deviceName = "Living Room",
+                onSwitchDevice = { switched = true },
+                onOpenSettings = { settingsOpened = true },
+                layoutStyle = RemoteLayoutStyle.Iphone,
+                keyboardProbe = { "" },
+            )
+        }
+
+        rule.onNodeWithTag("iphone-touch-area").assertIsDisplayed()
+        rule.onAllNodesWithTag("trackpad").assertCountEquals(0)
+        rule.onNodeWithContentDescription("Keyboard").assertIsDisplayed()
+        rule.onNodeWithContentDescription("Settings").assertIsDisplayed()
+        rule.onNodeWithContentDescription("Power").assertIsDisplayed()
+        rule.onNodeWithContentDescription("TV/Home").assertExists()
+        rule.onNodeWithContentDescription("Play/Pause").assertExists()
+        rule.onNodeWithContentDescription("Back").assertExists()
+        rule.onNodeWithText("Living Room").assertIsDisplayed()
+        rule.onNodeWithText("CH").assertExists()
+
+        rule.onNodeWithText("Living Room").performClick()
+        rule.waitForIdle()
+        assertTrue(switched, "iPhone style must retain the device switcher")
+
+        rule.onNodeWithContentDescription("Settings").performClick()
+        rule.waitForIdle()
+        assertTrue(settingsOpened, "iPhone style must keep settings reachable")
+    }
+
+    @Test fun iphoneStyleTopActionsUseUniformHitTargets() {
+        rule.setContent {
+            RemoteScreen(
+                remoteVm = fakeRemoteVm(FakeSession()),
+                keyboardVm = keyboardVm(),
+                deviceName = "Living Room",
+                onSwitchDevice = {},
+                layoutStyle = RemoteLayoutStyle.Iphone,
+                keyboardProbe = { "" },
+            )
+        }
+
+        listOf("Keyboard", "Settings", "Power").forEach { action ->
+            rule.onNodeWithContentDescription(action)
+                .assertWidthIsEqualTo(44.dp)
+                .assertHeightIsEqualTo(44.dp)
+        }
+    }
+
+    @Test fun iphoneStyleUsesBalancedSpacingForActualDeviceSize() {
+        assertEquals(14.dp, IphoneRemoteLayoutMetrics.HorizontalPadding)
+        assertEquals(28.dp, IphoneRemoteLayoutMetrics.TouchToControlsGap)
+        assertEquals(32.dp, IphoneRemoteLayoutMetrics.BottomPadding)
+        assertEquals(172.dp, IphoneRemoteLayoutMetrics.BottomControlsHeight)
     }
 
     @Test fun backInvokesMenu() {

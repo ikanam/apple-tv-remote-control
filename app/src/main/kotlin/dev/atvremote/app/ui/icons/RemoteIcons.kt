@@ -272,6 +272,17 @@ fun IconSettings(size: Dp = 24.dp, color: Color = LocalContentColor.current, str
     }
 }
 
+/** List glyph used by the iPhone-style remote top-center settings entry. */
+@Composable
+fun IconList(size: Dp = 24.dp, color: Color = LocalContentColor.current, strokeWidth: Float = 1.8f, modifier: Modifier = Modifier) {
+    val p = rememberPath("M8 6h11M8 12h11M8 18h11")
+    val dots = rememberPath(circle(4.5f, 6f, 1f) + circle(4.5f, 12f, 1f) + circle(4.5f, 18f, 1f))
+    IconCanvas(size, color, modifier) { c ->
+        strokePath(p, c, strokeWidth)
+        fillPath(dots, c)
+    }
+}
+
 /** icons.jsx:52-57 — a filled dot with a soft halo (`box-shadow 0 0 0 4px c22`). */
 @Composable
 fun IconDot(

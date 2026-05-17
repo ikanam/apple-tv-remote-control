@@ -50,7 +50,6 @@ class AppNavUiTest {
 
     private fun remoteVm() = RemoteViewModel(
         sessionProvider = { FakeSession() },
-        isConnected = { true },
         onTap = {}, onEdge = {}, onSelect = {},
     )
 

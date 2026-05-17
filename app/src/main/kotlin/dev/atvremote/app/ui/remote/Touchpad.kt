@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,16 +31,22 @@ import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import dev.atvremote.app.swipe.SwipeEngine
 import dev.atvremote.app.swipe.SwipeTuning
 import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.app.ui.theme.Brushes
 import dev.atvremote.app.ui.theme.DesignTokens
 import dev.atvremote.protocol.RemoteButton
+import android.os.SystemClock
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.atan2
 import kotlin.math.hypot
+
+/** Poll cadence for the in-hold long-press timer (hunt #2): well under the
+ *  450 ms longPressMs so the press fires promptly while held, but coarse
+ *  enough to be ~free when a finger is parked. */
+private const val LONG_PRESS_POLL_MS = 60L
 
 /**
  * Pure discrete-tap zone hit-test — the exact port of `remote.jsx:15-34`.
@@ -90,33 +97,26 @@ private fun RemoteButton.glowEdge(): Brushes.GlowEdge? = when (this) {
  *    touch-slop) is hit-tested with [zoneFor] and reported via [onDirection],
  *    driving the matching active-dot / edge-glow / center-OK visual for
  *    ~180ms (`remote.jsx:12`);
- *  - any gesture that *moves beyond touch-slop* is a **drag**: it is fed to
- *    the existing pure [SwipeEngine] and its decisions are emitted through
- *    [onTouchEvent] (continuous Siri-remote-equivalent touch — a preserved
- *    real capability, never a regression). A drag NEVER also fires a
- *    tap-zone [onDirection].
+ *  - any gesture that *moves beyond touch-slop* is a **drag**: it emits
+ *    deterministic [TouchEvent.DirectionalStep] events through [onTouchEvent].
+ *    The main remote UI does not use touch streaming for focus
+ *    navigation because tvOS/app touch momentum is content-defined. A drag
+ *    NEVER also fires a tap-zone [onDirection].
  *
- * The engine is driven on every gesture (down/move + tick) so its slop/long-
- * press accounting stays consistent, but its outputs are **withheld** until
- * the gesture is classified: on finger-up the classification decides which
- * path "wins". The precise invariant (enforced by [TouchpadGesture]):
+ * The reducer withholds output until the gesture is classified: on finger-up
+ * the classification decides which path "wins". The precise invariant
+ * (enforced by [TouchpadGesture]):
  *
  *  - a **tap** delivers **exactly one** [onDirection] (the [zoneFor] zone) and
- *    **zero** [onTouchEvent] — the engine's own `Tap`/`LongPress`/
- *    `DirectionalStep` are buffered while unclassified and discarded on a tap,
- *    so a slow in-zone press can no longer fire a `LongPress` *and* a zone
- *    press (no undocumented double input);
- *  - a **drag** delivers the SwipeEngine stream (`Move(Press)` + `Move(Hold)`
- *    + terminal `Move(Release)` + inertia) via [onTouchEvent] and **zero**
- *    [onDirection]. `Move` frames are not streamed to the VM for a press that
- *    later turns out to be a tap (they are buffered until the slop crossing).
+ *    **zero** [onTouchEvent], so a slow in-zone press can no longer fire a
+ *    `LongPress` *and* a zone press (no undocumented double input);
+ *  - a **drag** delivers HID direction steps via [onTouchEvent] and **zero**
+ *    [onDirection].
  *
  * Termination is guaranteed exactly once. On a normal up OR a cancellation
  * (an ancestor consumes the pointer, or the composable leaves composition
- * mid-gesture) the engine receives `onUp` exactly once and — for a drag — a
- * terminal `Move(Release)` reaches [onTouchEvent], so the VM/device never sees
- * a virtual finger that never lifts; a cancelled drag drops inertia, a
- * cancelled tap fires nothing.
+ * mid-gesture) closes reducer state. A cancelled tap fires nothing; a
+ * cancelled drag emits no extra step on cancellation.
  *
  * Multi-touch safe: the gesture tracks the pointer id latched from
  * `awaitFirstDown()`; a second finger cannot hijack `positionChange()` nor keep
@@ -126,8 +126,7 @@ private fun RemoteButton.glowEdge(): Brushes.GlowEdge? = when (this) {
  * `ViewConfiguration` slop, ~the same threshold Compose's own `detectDrag*`
  * uses) — accumulated as the unsigned path length since touch-down; once it
  * exceeds slop the gesture is irrevocably a drag for the rest of that press.
- * Timestamps are the monotonic pointer `uptimeMillis` (SwipeEngine assumes
- * monotonic time; wall-clock can jump).
+ * Timestamps are the monotonic pointer `uptimeMillis` (wall-clock can jump).
  *
  * VM-agnostic: callers (T3) wire [onDirection] → `vm.pressButton(...)` and
  * [onTouchEvent] → `vm.onTouchEvent(...)`. Both are read through
@@ -189,13 +188,16 @@ fun Touchpad(
         )
     }
 
-    // remote.jsx:43-47 — 240×240, centered.
-    Box(modifier = modifier.size(240.dp), contentAlignment = Alignment.Center) {
+    // remote.jsx:43-47 was 240×240; owner-enlarged ×1.2 → 288 disk / 308 ring
+    // / 192 center OK (the +20dp ring inset and 14dp dot insets are kept).
+    // zoneFor's innerR (width*0.33) and the Robolectric tests use relative
+    // offsets so the bigger pad needs no test changes.
+    Box(modifier = modifier.size(288.dp), contentAlignment = Alignment.Center) {
 
         // --- outer ring glow (inset -10dp ⇒ +10dp each side) — :48-55 ----
         Box(
             modifier = Modifier
-                .size(260.dp)
+                .size(308.dp)
                 .clip(CircleShape)
                 .drawBehind {
                     drawCircle(
@@ -209,7 +211,7 @@ fun Touchpad(
         // --- base disk + gesture surface — remote.jsx:57-67 ---------------
         Box(
             modifier = Modifier
-                .size(240.dp)
+                .size(288.dp)
                 .testTag("trackpad")
                 .clip(CircleShape)
                 .background(disk, CircleShape)
@@ -229,20 +231,18 @@ fun Touchpad(
                     // never invokes stale lambdas.
                     val w = size.width.toFloat()
                     val h = size.height.toFloat()
-                    // edge zones intentionally KEPT (tuning.edgeZoneFraction):
-                    // a real Siri remote's outer edge is NOT a swipe surface —
-                    // a press there is a directional press, not a drag.
-                    val engine = SwipeEngine(tuning, w, h)
                     awaitPointerEventScope {
                         while (true) {
                             val down = awaitFirstDown()
                             // C2: latch the tracked pointer id so a second
                             // finger can never hijack positionChange()/pressed.
                             val pid = down.id
-                            val gesture = TouchpadGesture(engine, w, h, touchSlopPx)
+                            val gesture = TouchpadGesture(w, h, touchSlopPx, tuning.dragStepFraction)
 
                             fun apply(outcome: TouchpadGesture.Outcome) {
-                                outcome.events.forEach { onTouchEventState.value(it) }
+                                outcome.events.forEach {
+                                    onTouchEventState.value(it)
+                                }
                                 outcome.direction?.let { btn ->
                                     active = btn
                                     activeNonce++
@@ -254,8 +254,7 @@ fun Touchpad(
                             // cancelled (composable leaves composition / an
                             // ancestor cancels the gesture) while a touch is
                             // in progress, synthesize a clean terminal so the
-                            // engine still gets onUp and a drag's Release
-                            // reaches the VM — then rethrow.
+                            // reducer state is still closed — then rethrow.
                             var lastUptime = down.uptimeMillis
                             try {
                                 apply(gesture.onDown(down.position.x, down.position.y, down.uptimeMillis))
@@ -264,7 +263,32 @@ fun Touchpad(
                                     // Main pass so an ancestor that consumes
                                     // the change in an earlier pass is seen by
                                     // us as a cancellation, not a phantom move.
-                                    val ev = awaitPointerEvent(PointerEventPass.Main)
+                                    // A perfectly still finger emits NO pointer
+                                    // events, so while a long-press is still
+                                    // possible we bound the wait and, on a
+                                    // timeout (= still held, no motion), drive
+                                    // the reducer's long-press timer *during*
+                                    // the hold — exactly how Compose's own
+                                    // detectTapGestures does it (hunt #2). Once
+                                    // it can't long-press (drag / delivered) we
+                                    // wait unbounded again (no idle polling).
+                                    val ev = if (gesture.canLongPress) {
+                                        withTimeoutOrNull(LONG_PRESS_POLL_MS) {
+                                            awaitPointerEvent(PointerEventPass.Main)
+                                        }
+                                    } else {
+                                        awaitPointerEvent(PointerEventPass.Main)
+                                    }
+                                    if (ev == null) {
+                                        // Timed out → finger still down, no
+                                        // motion. SystemClock.uptimeMillis() is
+                                        // the same clock as pointer uptimeMillis
+                                        // so engine time stays monotonic.
+                                        val now = SystemClock.uptimeMillis()
+                                        lastUptime = now
+                                        apply(gesture.onHoldTick(now))
+                                        continue
+                                    }
                                     val ch = ev.changes.firstOrNull { it.id == pid }
                                         ?: continue // C2/I3: our pointer absent
                                     lastUptime = ch.uptimeMillis
@@ -273,7 +297,7 @@ fun Touchpad(
                                     // check (move/up branches below), so an
                                     // already-consumed change here means an
                                     // ancestor claimed it — treat as a cancel
-                                    // (C3): clean terminal Release, no inertia.
+                                    // (C3): close reducer state, no inertia.
                                     if (ch.isConsumed && !up) {
                                         apply(gesture.onCancel(ch.uptimeMillis))
                                         dragging = false
@@ -294,8 +318,7 @@ fun Touchpad(
                                 }
                             } catch (c: CancellationException) {
                                 // The invariant: after ANY gesture end (normal
-                                // up OR cancel) the engine has had onUp exactly
-                                // once and a drag's Release reached the VM.
+                                // up OR cancel) reducer state is closed.
                                 if (gesture.inProgress) {
                                     apply(gesture.onCancel(lastUptime))
                                 }
@@ -328,12 +351,11 @@ fun Touchpad(
             Box(
                 modifier = Modifier
                     .align(Alignment.Center)
-                    // Enlarged confirm/OK button (96dp → 128 → 160dp). The
-                    // outer pad (240dp disk / 260dp ring / dot insets) is
-                    // unchanged; only this center grows. zoneFor's innerR
-                    // (width*0.33) matches this so the whole visible OK taps
-                    // as Select.
-                    .size(160.dp)
+                    // Enlarged confirm/OK button (96 → 128 → 160 → 192dp,
+                    // tracking the ×1.2 pad enlargement). zoneFor's innerR
+                    // (width*0.33 of the 288dp pad ≈ 95dp) matches this so the
+                    // whole visible OK taps as Select.
+                    .size(192.dp)
                     .scale(okScale)
                     .clip(CircleShape)
                     .background(if (okPressed) okActive else okIdle, CircleShape)
@@ -353,6 +375,93 @@ fun Touchpad(
     }
 }
 
+@Composable
+fun IphoneTouchArea(
+    tuning: SwipeTuning,
+    onDirection: (RemoteButton) -> Unit,
+    onTouchEvent: (TouchEvent) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val touchSlopPx = LocalViewConfiguration.current.touchSlop
+    val onDirectionState = rememberUpdatedState(onDirection)
+    val onTouchEventState = rememberUpdatedState(onTouchEvent)
+
+    Box(
+        modifier = modifier
+            .testTag("iphone-touch-area")
+            .clip(RoundedCornerShape(46.dp))
+            .background(Color(0xFF1C1C1E))
+            .pointerInput(tuning) {
+                val w = size.width.toFloat()
+                val h = size.height.toFloat()
+                awaitPointerEventScope {
+                    while (true) {
+                        val down = awaitFirstDown()
+                        val pid = down.id
+                        val gesture = TouchpadGesture(
+                            w,
+                            h,
+                            touchSlopPx,
+                            tuning.dragStepFraction,
+                        )
+
+                        fun apply(outcome: TouchpadGesture.Outcome) {
+                            outcome.events.forEach { onTouchEventState.value(it) }
+                            outcome.direction?.let { onDirectionState.value(it) }
+                        }
+
+                        var lastUptime = down.uptimeMillis
+                        try {
+                            apply(gesture.onDown(down.position.x, down.position.y, down.uptimeMillis))
+                            var dragging = true
+                            while (dragging) {
+                                val ev = if (gesture.canLongPress) {
+                                    withTimeoutOrNull(LONG_PRESS_POLL_MS) {
+                                        awaitPointerEvent(PointerEventPass.Main)
+                                    }
+                                } else {
+                                    awaitPointerEvent(PointerEventPass.Main)
+                                }
+                                if (ev == null) {
+                                    val now = SystemClock.uptimeMillis()
+                                    lastUptime = now
+                                    apply(gesture.onHoldTick(now))
+                                    continue
+                                }
+                                val ch = ev.changes.firstOrNull { it.id == pid } ?: continue
+                                lastUptime = ch.uptimeMillis
+                                val up = !ch.pressed || ch.changedToUp()
+                                if (ch.isConsumed && !up) {
+                                    apply(gesture.onCancel(ch.uptimeMillis))
+                                    dragging = false
+                                } else if (up) {
+                                    apply(gesture.onUp(ch.position.x, ch.position.y, ch.uptimeMillis))
+                                    ch.consume()
+                                    dragging = false
+                                } else {
+                                    val d = ch.positionChange()
+                                    apply(
+                                        gesture.onMove(
+                                            ch.position.x,
+                                            ch.position.y,
+                                            d.x,
+                                            d.y,
+                                            ch.uptimeMillis,
+                                        ),
+                                    )
+                                    ch.consume()
+                                }
+                            }
+                        } catch (c: CancellationException) {
+                            if (gesture.inProgress) apply(gesture.onCancel(lastUptime))
+                            throw c
+                        }
+                    }
+                }
+            },
+    )
+}
+
 /**
  * The 4 subtle direction indicator dots — remote.jsx:69-88. 6dp dots inset
  * 14dp from the disk edge; active dot `#cfdaff` (else `rgba(255,255,255,0.4)`)
@@ -360,7 +469,7 @@ fun Touchpad(
  */
 @Composable
 private fun DirectionDots(active: RemoteButton?) {
-    Box(modifier = Modifier.size(240.dp)) {
+    Box(modifier = Modifier.size(288.dp)) {
         Dot(RemoteButton.Up, active, Alignment.TopCenter, Modifier.padding(top = 14.dp))
         Dot(RemoteButton.Right, active, Alignment.CenterEnd, Modifier.padding(end = 14.dp))
         Dot(RemoteButton.Down, active, Alignment.BottomCenter, Modifier.padding(bottom = 14.dp))

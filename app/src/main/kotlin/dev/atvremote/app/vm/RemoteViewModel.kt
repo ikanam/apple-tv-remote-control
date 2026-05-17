@@ -10,12 +10,10 @@ import dev.atvremote.protocol.RemoteButton
 import kotlinx.coroutines.launch
 
 /**
- * Translates SwipeEngine TouchEvents + UI buttons into LOCKED CompanionSession calls.
- * Spec §7: swipe Move events are dropped unless connected; discrete buttons still fire.
+ * Translates touchpad events + UI buttons into LOCKED CompanionSession calls.
  */
 class RemoteViewModel(
     private val sessionProvider: () -> CompanionSession?,
-    private val isConnected: () -> Boolean,
     private val onTap: () -> Unit,
     private val onEdge: () -> Unit,
     private val onSelect: () -> Unit,
@@ -23,11 +21,6 @@ class RemoteViewModel(
 
     fun onTouchEvent(event: TouchEvent) {
         when (event) {
-            is TouchEvent.Move -> {
-                if (!isConnected()) return
-                val s = sessionProvider() ?: return
-                viewModelScope.launch { s.touch(event.x, event.y, event.phase) }
-            }
             is TouchEvent.Tap -> {
                 onTap()
                 val s = sessionProvider() ?: return
