@@ -173,58 +173,7 @@ class ConnectScreenUiTest {
         rule.onNodeWithText("已发现 2 台设备").assertIsDisplayed()
     }
 
-    @Test fun statusPillDegradesToConnectedWhenSsidNull() {
-        rule.setContent {
-            ConnectScreen(
-                devices = devices(),
-                scanning = false,
-                onSelectDevice = {},
-                pairingState = null,
-                onSubmitPin = {},
-                onPairCancel = {},
-                ssid = null,
-                localIp = null,
-            )
-        }
-        rule.onNodeWithText("已连接").assertIsDisplayed()
-    }
-
-    @Test fun statusPillShowsSsidAndIpWhenProvided() {
-        rule.setContent {
-            ConnectScreen(
-                devices = devices(),
-                scanning = false,
-                onSelectDevice = {},
-                pairingState = null,
-                onSubmitPin = {},
-                onPairCancel = {},
-                ssid = "HomeNet_5G",
-                localIp = "192.168.1.42",
-            )
-        }
-        rule.onNodeWithText("HomeNet_5G").assertIsDisplayed()
-        rule.onNodeWithText("192.168.1.42 · 已连接").assertIsDisplayed()
-    }
-
-    @Test fun settingsGearInvokesOnOpenSettings() {
-        var opened = false
-        rule.setContent {
-            ConnectScreen(
-                devices = devices(),
-                scanning = false,
-                onSelectDevice = {},
-                pairingState = null,
-                onSubmitPin = {},
-                onPairCancel = {},
-                onOpenSettings = { opened = true },
-            )
-        }
-        rule.onNodeWithContentDescription("Settings").performClick()
-        rule.waitForIdle()
-        assertTrue(opened, "settings gear must invoke onOpenSettings")
-    }
-
-    @Test fun firstRunModeShowsLogoAndStep01() {
+    @Test fun firstRunModeShowsLogoAndHero() {
         rule.setContent {
             ConnectScreen(
                 devices = devices(),
@@ -237,7 +186,8 @@ class ConnectScreenUiTest {
             )
         }
         rule.onNodeWithText("TV Remote").assertIsDisplayed()
-        rule.onNodeWithText("STEP 01 — DISCOVER").assertIsDisplayed()
+        // The `STEP 01 — DISCOVER` eyebrow was removed from first-run.
+        rule.onAllNodesWithText("STEP 01 — DISCOVER").assertCountEquals(0)
         rule.onNodeWithText("寻找你的 Apple TV").assertIsDisplayed()
         // first-run has no back button.
         rule.onAllNodesWithContentDescription("Back").assertCountEquals(0)

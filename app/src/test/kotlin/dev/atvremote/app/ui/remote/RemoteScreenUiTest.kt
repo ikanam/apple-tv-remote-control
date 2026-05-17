@@ -112,6 +112,24 @@ class RemoteScreenUiTest {
         assertTrue(switched, "tapping the device chip must call onSwitchDevice")
     }
 
+    // Coverage relocated from ConnectScreenUiTest: the settings gear moved to
+    // the main (Remote) screen's top bar.
+    @Test fun settingsGearInvokesOnOpenSettings() {
+        var opened = false
+        rule.setContent {
+            RemoteScreen(
+                remoteVm = fakeRemoteVm(FakeSession()),
+                keyboardVm = keyboardVm(),
+                deviceName = "Living Room",
+                onSwitchDevice = {},
+                onOpenSettings = { opened = true },
+            )
+        }
+        rule.onNodeWithContentDescription("Settings").performClick()
+        rule.waitForIdle()
+        assertTrue(opened, "settings gear must invoke onOpenSettings")
+    }
+
     @Test fun backInvokesMenu() {
         val session = FakeSession()
         rule.setContent {

@@ -1,9 +1,13 @@
 package dev.atvremote.app.ui.connect
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -48,11 +53,8 @@ import dev.atvremote.app.ui.icons.IconBack
 import dev.atvremote.app.ui.icons.IconCheck
 import dev.atvremote.app.ui.icons.IconChevron
 import dev.atvremote.app.ui.icons.IconDot
-import dev.atvremote.app.ui.icons.IconRefresh
-import dev.atvremote.app.ui.icons.IconSettings
 import dev.atvremote.app.ui.icons.IconSpinner
 import dev.atvremote.app.ui.icons.IconTV
-import dev.atvremote.app.ui.icons.IconWifi
 import dev.atvremote.app.ui.theme.Brushes
 import dev.atvremote.app.ui.theme.DesignTokens
 import dev.atvremote.app.ui.theme.JetBrainsMonoFontFamily
@@ -76,24 +78,21 @@ import dev.atvremote.protocol.AppleTvDevice
  *    card's right edge is `IconCheck` (current) else `IconChevron`.
  *  - A small JetBrains-Mono `已配对` chip is added when
  *    [DiscoveredDevice.paired] (real data we *do* have).
- *  - The status pill SSID/IP is degraded: title falls back to `已连接` when
- *    [ssid] is null and the mono IP subline is hidden when [localIp] is null.
- *  - The `!scanning` refresh icon is a **no-op visual affordance** — discovery
- *    is continuous (no rescan API); we do not fabricate a fake re-scan.
+ *  - The Wi-Fi status pill (SSID/IP + refresh affordance) was removed entirely:
+ *    it carried no actionable value (discovery is continuous, no rescan API).
  *  - `+ 手动添加 IP 地址` opens a minimal name/IP dialog that constructs an
  *    [AppleTvDevice] and feeds [onManualAdd] (the same select path).
  *
  * ## Two modes (driven by [onClose])
  *  - **First-run** ([onClose] == null): TV-logo gradient tile + title
- *    `TV Remote`, eyebrow `STEP 01 — DISCOVER`, hero `在 Wi-Fi 网络上 /
- *    寻找你的 Apple TV`, no back button.
+ *    `TV Remote`, hero `在 Wi-Fi 网络上 / 寻找你的 Apple TV`, no eyebrow,
+ *    no back button.
  *  - **Switcher overlay** ([onClose] != null): back button + title `切换设备`,
  *    eyebrow `SWITCH — SELECT DEVICE`, hero `选择要控制的 / Apple TV 设备`;
  *    the [currentId] card shows the `CURRENT` badge + `IconCheck` + accent
  *    border and tapping it calls [onClose].
  *
- * This is a pure composable — it does NOT read `WifiManager`; [ssid]/[localIp]
- * are params (T5 supplies real values; AppNav passes null → degraded pill).
+ * This is a pure composable.
  *
  * @param devices the real [DiscoveryViewModel] device list.
  * @param scanning the real `DiscoveryUiState.scanning` flag.
@@ -105,9 +104,6 @@ import dev.atvremote.protocol.AppleTvDevice
  * @param pairingDeviceName the 22sp sheet title; falls back to the mode title.
  * @param currentId id of the currently-connected device (switcher mode).
  * @param onClose null = first-run; non-null = switcher overlay + back/current.
- * @param onOpenSettings the top-bar gear → `SwipeTuningScreen` (spec §1).
- * @param ssid real Wi-Fi SSID or null (degrade → `已连接`).
- * @param localIp real local IP or null (degrade → IP subline hidden).
  * @param onManualAdd a manually-constructed [AppleTvDevice] (same select path).
  */
 @Composable
@@ -121,9 +117,6 @@ fun ConnectScreen(
     pairingDeviceName: String? = null,
     currentId: String? = null,
     onClose: (() -> Unit)? = null,
-    onOpenSettings: () -> Unit = {},
-    ssid: String? = null,
-    localIp: String? = null,
     onManualAdd: (AppleTvDevice) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
@@ -141,6 +134,10 @@ fun ConnectScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                // Immersive: the background Box above is full-bleed (flows
+                // behind the transparent status bar); only this content column
+                // is inset, so the bar blends with the screen, no flat band.
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState())
                 // connect.jsx:130 padding: '8px 0 24px' (horizontal pad lives
                 // on each section, matching the prototype's per-block padding).
@@ -189,16 +186,6 @@ fun ConnectScreen(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(20.dp))
-                        .clickable(role = Role.Button, onClick = onOpenSettings)
-                        .semantics { contentDescription = "Settings" },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    IconSettings(size = 20.dp, color = Color.White.copy(alpha = 0.6f))
-                }
             }
 
             // ---- Hero — connect.jsx:168 ------------------------------------
@@ -207,14 +194,19 @@ fun ConnectScreen(
                     .fillMaxWidth()
                     .padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp),
             ) {
-                Text(
-                    text = if (switcher) "SWITCH — SELECT DEVICE" else "STEP 01 — DISCOVER",
-                    color = DesignTokens.AccentLight,
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontSize = 11.sp,
-                    letterSpacing = (0.2f * 11).sp, // connect.jsx:169 ls 0.2em
-                )
-                Spacer(Modifier.height(8.dp)) // connect.jsx:172 marginTop:8
+                // First-run no longer shows an eyebrow (the old
+                // `STEP 01 — DISCOVER` was removed); the switcher overlay keeps
+                // its `SWITCH — SELECT DEVICE` label.
+                if (switcher) {
+                    Text(
+                        text = "SWITCH — SELECT DEVICE",
+                        color = DesignTokens.AccentLight,
+                        fontFamily = JetBrainsMonoFontFamily,
+                        fontSize = 11.sp,
+                        letterSpacing = (0.2f * 11).sp, // connect.jsx:169 ls 0.2em
+                    )
+                    Spacer(Modifier.height(8.dp)) // connect.jsx:172 marginTop:8
+                }
                 // 30sp 700, lineHeight ~1.15: first line white, second muted.
                 Text(
                     text = if (switcher) "选择要控制的" else "在 Wi-Fi 网络上",
@@ -230,69 +222,6 @@ fun ConnectScreen(
                     fontWeight = FontWeight.Bold,
                     lineHeight = 34.sp,
                 )
-            }
-
-            // ---- Status pill — connect.jsx:182 -----------------------------
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 24.dp, end = 24.dp, top = 20.dp, bottom = 12.dp),
-            ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(DesignTokens.AccentFill08)
-                        .border(
-                            width = 1.dp,
-                            color = DesignTokens.AccentBorder18,
-                            shape = RoundedCornerShape(12.dp),
-                        )
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    IconWifi(size = 18.dp, color = DesignTokens.AccentLight)
-                    Spacer(Modifier.width(12.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            // Degrade: real SSID, else `已连接` (spec §1).
-                            text = ssid ?: "已连接",
-                            color = DesignTokens.AccentActiveText, // #cfdaff
-                            fontSize = 13.sp,
-                        )
-                        // Mono IP subline only when localIp is known.
-                        if (localIp != null) {
-                            Text(
-                                text = "$localIp · 已连接",
-                                color = DesignTokens.TextMuted45,
-                                fontFamily = JetBrainsMonoFontFamily,
-                                fontSize = 11.sp,
-                                modifier = Modifier.padding(top = 2.dp),
-                            )
-                        }
-                    }
-                    if (scanning) {
-                        IconSpinner(size = 18.dp, color = DesignTokens.AccentLight)
-                    } else {
-                        // No-op visual affordance: discovery is continuous (no
-                        // rescan API). We do NOT fabricate a fake re-scan
-                        // (spec §1) — the tap is intentionally inert.
-                        Box(
-                            modifier = Modifier
-                                .size(26.dp)
-                                .clickable(
-                                    interactionSource = remember { MutableInteractionSource() },
-                                    indication = null,
-                                    role = Role.Button,
-                                    onClick = {},
-                                )
-                                .semantics { contentDescription = "Refresh" },
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            IconRefresh(size = 18.dp, color = DesignTokens.AccentLight)
-                        }
-                    }
-                }
             }
 
             // ---- Device list — connect.jsx:206 -----------------------------
@@ -330,27 +259,7 @@ fun ConnectScreen(
                     }
 
                     if (scanning) {
-                        // Dashed scanning placeholder — connect.jsx:268.
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(16.dp))
-                                .border(
-                                    width = 1.dp,
-                                    color = Color.White.copy(alpha = 0.08f),
-                                    shape = RoundedCornerShape(16.dp),
-                                )
-                                .padding(horizontal = 16.dp, vertical = 20.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            IconSpinner(size = 16.dp, color = DesignTokens.AccentLight)
-                            Spacer(Modifier.width(12.dp))
-                            Text(
-                                text = "在网络中扫描 Apple TV 设备…",
-                                color = DesignTokens.TextMuted40,
-                                fontSize = 13.sp,
-                            )
-                        }
+                        ScanningPlaceholder()
                     }
                 }
             }
@@ -416,6 +325,45 @@ fun ConnectScreen(
                 },
             )
         }
+    }
+}
+
+/**
+ * Dashed "scanning…" placeholder (connect.jsx:268). [IconSpinner] already
+ * supports an `angleDeg`; an infinite transition rotates it continuously. The
+ * transition only runs while this composable is in composition — i.e. only
+ * while `scanning` is true (the caller gates it), so there is no idle cost.
+ */
+@Composable
+private fun ScanningPlaceholder() {
+    val transition = rememberInfiniteTransition(label = "scanSpinner")
+    val angle by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 360f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+        ),
+        label = "scanSpinnerAngle",
+    )
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .border(
+                width = 1.dp,
+                color = Color.White.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(16.dp),
+            )
+            .padding(horizontal = 16.dp, vertical = 20.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconSpinner(size = 16.dp, color = DesignTokens.AccentLight, angleDeg = angle)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = "在网络中扫描 Apple TV 设备…",
+            color = DesignTokens.TextMuted40,
+            fontSize = 13.sp,
+        )
     }
 }
 

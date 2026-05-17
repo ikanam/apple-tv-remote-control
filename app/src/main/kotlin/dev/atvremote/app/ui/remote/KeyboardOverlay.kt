@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.LocalTextStyle
@@ -55,14 +56,12 @@ import dev.atvremote.app.ui.theme.JetBrainsMonoFontFamily
  * arbitrary ancestor's pixels as a backdrop, so this is the faithful-as-
  * possible equivalent of the CSS `backdropFilter`.)
  *
- * @param deviceName shown in the `TEXT INPUT → {name}` eyebrow.
  * @param text the live keyboard text (= `KeyboardViewModel.state.text`).
  * @param onTextChange real-time edit callback (→ `keyboardVm.setText`).
  * @param onClose the `完成` pill / dismiss.
  */
 @Composable
 fun KeyboardOverlay(
-    deviceName: String,
     text: String,
     onTextChange: (String) -> Unit,
     onClose: () -> Unit,
@@ -97,21 +96,22 @@ fun KeyboardOverlay(
                 .then(if (blurSupported) Modifier.blur(14.dp) else Modifier)
                 .background(scrimColor),
         )
-        Column(modifier = Modifier.fillMaxSize().padding(20.dp)) {
-            // --- header: eyebrow + 完成 pill — remote.jsx:247-256 ----------
+        // Immersive: the scrim/blur Box above stays full-bleed (covers behind
+        // the transparent status bar), but the CONTENT is statusBarsPadding()-
+        // inset so the header (the 完成 pill) is not occluded by — and
+        // untappable behind — the status bar.
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(20.dp),
+        ) {
+            // --- header: 完成 pill only (the TEXT INPUT eyebrow was removed) -
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
+                horizontalArrangement = Arrangement.End,
             ) {
-                Text(
-                    text = "TEXT INPUT → $deviceName",
-                    color = DesignTokens.AccentLight, // #8fb8ff
-                    fontFamily = JetBrainsMonoFontFamily,
-                    fontSize = 11.sp,
-                    // remote.jsx:248 `letterSpacing: '0.2em'` → 0.2 × 11sp.
-                    letterSpacing = 2.2.sp,
-                )
                 Text(
                     text = "完成",
                     // remote.jsx:253 `color: rgba(255,255,255,0.7)`.

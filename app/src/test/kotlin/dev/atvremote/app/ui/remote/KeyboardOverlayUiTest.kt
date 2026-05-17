@@ -24,22 +24,9 @@ import kotlin.test.assertTrue
 class KeyboardOverlayUiTest {
     @get:Rule val rule = createComposeRule()
 
-    @Test fun headerShowsDeviceNameAndTextInputEyebrow() {
-        rule.setContent {
-            KeyboardOverlay(
-                deviceName = "Living Room",
-                text = "",
-                onTextChange = {},
-                onClose = {},
-            )
-        }
-        rule.onNodeWithText("TEXT INPUT → Living Room").assertIsDisplayed()
-    }
-
     @Test fun counterReflectsLength() {
         rule.setContent {
             KeyboardOverlay(
-                deviceName = "Living Room",
                 text = "hello",
                 onTextChange = {},
                 onClose = {},
@@ -53,7 +40,6 @@ class KeyboardOverlayUiTest {
         var pushed: String? = null
         rule.setContent {
             KeyboardOverlay(
-                deviceName = "Living Room",
                 text = "ne",
                 onTextChange = { pushed = it },
                 onClose = {},
@@ -73,7 +59,6 @@ class KeyboardOverlayUiTest {
         var closed = false
         rule.setContent {
             KeyboardOverlay(
-                deviceName = "Living Room",
                 text = "",
                 onTextChange = {},
                 onClose = { closed = true },

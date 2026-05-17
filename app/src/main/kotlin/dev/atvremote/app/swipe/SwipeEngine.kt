@@ -2,57 +2,42 @@ package dev.atvremote.app.swipe
 
 import dev.atvremote.protocol.RemoteButton
 import dev.atvremote.protocol.TouchPhase
-import kotlin.math.abs
 import kotlin.math.hypot
-import kotlin.math.max
-import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * Pure full-fidelity trackpad gesture engine (spec §2/§5).
- * - single-finger drag -> relative focus move w/ velocity & inertia -> TouchEvent.Move stream
- * - tap -> TouchEvent.Tap ; long-press -> TouchEvent.LongPress
- * - press in an edge zone -> TouchEvent.DirectionalStep
- * Output is throttled to tuning.maxEventsPerSecond. No Android/Compose imports.
+ * Pyatv-faithful **absolute-position** trackpad mapper.
  *
- * **Thread-safety**: NOT thread-safe. All calls (`onDown`/`onMove`/`onTick`/`onUp`/
- * `onInertiaFrame`) must be confined to a single coroutine/dispatcher. `onDown` cancels
- * in-flight inertia so a re-gesture race is handled, but concurrent calls from different
- * threads would tear state.
+ * The Apple TV Companion `_hidT` touch model — and pyatv's `swipe()` /
+ * [dev.atvremote.protocol.session.TouchTransport.swipe] — is **absolute**:
+ * each sample is the finger's position on the trackpad linearly mapped into a
+ * `0..1000` box, phased Press → Hold… → Release. tvOS derives velocity and
+ * momentum itself from the `(cx, cy, _ns)` stream, exactly like a physical
+ * Siri remote.
  *
- * ## Non-obvious math reconciliations (the plan's draft did not pass its own tests)
+ * The previous engine instead accumulated `dxPx * gain(2.4) * accel` into a
+ * space recentered to 500 on every touch-down, with client-side inertia. A
+ * real swipe's `2.4 × (hundreds of px)` instantly exceeded the 500 half-range
+ * so `clamp` pinned every frame at 0/1000 — proven on-device: a controlled
+ * +440 px drag sent `x=1000` for 100 % of frames (no proportional tracking →
+ * "方向/距离不准、过冲、飘"). This rewrite drops gain / acceleration /
+ * recenter / client-inertia and emits the finger's absolute pad position,
+ * linearly. (hunt root-cause fix #15.)
  *
- * ### 1. First move after a press is never throttled
- * `onDown` does NOT seed `lastEmitMs` from the Press frame — it stays
- * `Long.MIN_VALUE`, so `throttled()` returns false for the *first* `onMove`
- * regardless of how soon it arrives (the press and the first move are distinct
- * gesture milestones; the press is an instantaneous state transition, not a
- * sampled point that should consume the rate budget). After that first move
- * sets `lastEmitMs`, the normal `minSpacingMs` throttle applies. This makes
- * `moveThrottledToMaxEventsPerSecond` exact: a@4 emits (lastEmitMs MIN -> set
- * 4), b@7 dropped (7-4=3 < 8), c@13 emits (13-4=9 >= 8).
+ * Kept deliberately (owner-confirmed):
+ *  - outer-edge press → [TouchEvent.DirectionalStep] (a real Siri remote's
+ *    edge is a directional click, not a swipe surface), gated by
+ *    [SwipeTuning.edgeZoneFraction];
+ *  - tap / long-press classification, so the Touchpad's discrete-tap path and
+ *    the [SwipeEngine] unit contract are otherwise unchanged.
  *
- * ### 2. Velocity-acceleration curve (slow drag ~= linear gain)
- * The draft computed `speed = travel / (now - downAtMs)` and
- * `accel = (1 + speed) ^ velocityExponent`, which inflates even a slow drag
- * (a 20px move over 16ms gave accel ~= 3, x ~= 644 vs the spec'd ~548).
+ * `tuning.gain` / `velocityExponent` / `inertiaDecay` / `inertiaMinSpeed` are
+ * now unused (momentum is the TV's job — the Tuning debug sliders are inert
+ * for positioning). The fields stay on [SwipeTuning] to avoid churn.
  *
- * Fixed to a *per-move* speed (px / ms since the previous sampled point, not
- * since press) with a slow-drag dead-band: only the portion of speed *above*
- * `SLOW_SPEED_THRESHOLD_PX_PER_MS` is accelerated:
- *
- *     excess = max(0, speed - SLOW_SPEED_THRESHOLD_PX_PER_MS)
- *     accel  = (1 + excess) ^ tuning.velocityExponent      // >= 1, == 1 for slow drags
- *     dUnits = dPx * tuning.gain * accel
- *
- * For `dragEmitsHoldPhaseScaledByGain` speed = 20px/16ms = 1.25 px/ms which is
- * below the 1.5 threshold => excess 0 => accel 1 => +20 * 2.4 ~= +48 => x 548
- * (in 540..560), y unchanged at 500. A genuine flick (inertia test: 200px/8ms
- * = 25 px/ms) is well above the threshold => large accel => large retained
- * `velX` => inertia runs many frames then decays below `inertiaMinSpeed`.
- * The `tuning.gain` / `velocityExponent` / `inertiaDecay` / `inertiaMinSpeed`
- * semantics from `SwipeTuning` are preserved (only the speed normalization and
- * the dead-band are added; `SwipeTuning` is untouched).
+ * Output is throttled to `tuning.maxEventsPerSecond`. No Android/Compose
+ * imports. **NOT thread-safe** — confine to one coroutine (mirrors the
+ * caller); see [dev.atvremote.app.ui.remote.TouchpadGesture].
  */
 class SwipeEngine(
     private val tuning: SwipeTuning,
@@ -60,44 +45,38 @@ class SwipeEngine(
     private val heightPx: Float,
 ) {
     private companion object {
-        /**
-         * Per-move speed (px/ms) at/below which a drag is treated as
-         * non-accelerated (accel == 1, pure linear `gain`). A normal deliberate
-         * focus drag is well under this; only fast flicks exceed it and feed
-         * the `velocityExponent` curve + inertia.
-         */
-        const val SLOW_SPEED_THRESHOLD_PX_PER_MS = 1.5f
-
-        /** Virtual trackpad coordinate center (origin of relative movement). */
-        private const val VIRT_CENTER = 500f
-        /** Virtual trackpad coordinate minimum bound. */
-        private const val VIRT_MIN = 0f
-        /** Virtual trackpad coordinate maximum bound. */
-        private const val VIRT_MAX = 1000f
+        private const val MAX = 1000f
     }
 
-    private fun clampVirt(v: Float) = v.coerceIn(VIRT_MIN, VIRT_MAX)
+    /** Finger px → absolute `0..1000` pad coordinate (pyatv model), clamped. */
+    private fun mapX(px: Float): Int =
+        (px / widthPx * MAX).coerceIn(0f, MAX).roundToInt()
+
+    private fun mapY(px: Float): Int =
+        (px / heightPx * MAX).coerceIn(0f, MAX).roundToInt()
 
     private var down = false
-    private var lastX = 0f
-    private var lastY = 0f
-    private var lastMoveMs = 0L         // timestamp of the previous sampled point (down or move)
-    private var virtX = VIRT_CENTER     // current virtual position in VIRT_MIN..VIRT_MAX
-    private var virtY = VIRT_CENTER
+    private var downX = 0f
+    private var downY = 0f
     private var downAtMs = 0L
     private var lastEmitMs = Long.MIN_VALUE
-    private var maxTravelUnits = 0f
+    private var maxTravelPx = 0f
     private var longPressed = false
     private var edgeConsumed = false
 
-    private var velX = 0f              // units/frame, for inertia
-    private var velY = 0f
-    var inertiaActive = false
-        private set
+    /** No client-side inertia — tvOS owns momentum (pyatv parity). Retained as
+     *  a stable `false` so [dev.atvremote.app.ui.remote.TouchpadGesture]'s
+     *  inertia loop compiles and simply never iterates. */
+    val inertiaActive: Boolean = false
 
-    private val minSpacingMs: Long get() = (1000L / tuning.maxEventsPerSecond).coerceAtLeast(1L)
+    private val minSpacingMs: Long
+        get() = (1000L / tuning.maxEventsPerSecond).coerceAtLeast(1L)
 
-    private fun clamp(v: Float) = v.coerceIn(VIRT_MIN, VIRT_MAX).roundToInt()
+    /** First move after a press is never throttled (lastEmitMs == MIN). */
+    private fun throttled(nowMs: Long): Boolean {
+        if (lastEmitMs == Long.MIN_VALUE) return false
+        return nowMs - lastEmitMs < minSpacingMs
+    }
 
     private fun edgeButton(px: Float, py: Float): RemoteButton? {
         val ex = tuning.edgeZoneFraction * (widthPx / 2f)
@@ -116,63 +95,38 @@ class SwipeEngine(
         return cands.maxByOrNull { it.second }?.first
     }
 
-    private fun throttled(nowMs: Long): Boolean {
-        if (lastEmitMs == Long.MIN_VALUE) return false
-        return nowMs - lastEmitMs < minSpacingMs
-    }
-
     fun onDown(x: Float, y: Float, nowMs: Long): List<TouchEvent> {
         down = true
-        lastX = x; lastY = y
+        downX = x; downY = y
         downAtMs = nowMs
-        lastMoveMs = nowMs
-        // Intentionally NOT seeding lastEmitMs from the Press: see KDoc note 1 —
-        // the first onMove after a press must never be throttled.
         lastEmitMs = Long.MIN_VALUE
-        maxTravelUnits = 0f
+        maxTravelPx = 0f
         longPressed = false
         edgeConsumed = false
-        velX = 0f; velY = 0f
-        inertiaActive = false
-        virtX = VIRT_CENTER; virtY = VIRT_CENTER
         val edge = edgeButton(x, y)
         if (edge != null) {
             edgeConsumed = true
             return listOf(TouchEvent.DirectionalStep(edge))
         }
-        return listOf(TouchEvent.Move(clamp(virtX), clamp(virtY), TouchPhase.Press))
+        return listOf(TouchEvent.Move(mapX(x), mapY(y), TouchPhase.Press))
     }
 
     fun onMove(x: Float, y: Float, nowMs: Long): List<TouchEvent> {
         if (!down || edgeConsumed) return emptyList()
-        val dxPx = x - lastX
-        val dyPx = y - lastY
-        lastX = x; lastY = y
-        // Per-move speed (px/ms since the previous sampled point), with a
-        // slow-drag dead-band so a deliberate drag is ~ linear gain (note 2).
-        // assumes monotonic nowMs (Compose pointer timestamps are); a backwards/out-of-order
-        // dt collapses to the 1ms floor = a single-frame speed spike — acceptable, not corrected here.
-        val dt = (nowMs - lastMoveMs).coerceAtLeast(1L).toFloat()
-        lastMoveMs = nowMs
-        val speed = hypot(dxPx.toDouble(), dyPx.toDouble()).toFloat() / dt
-        val excess = max(0f, speed - SLOW_SPEED_THRESHOLD_PX_PER_MS)
-        val accel = (1f + excess).pow(tuning.velocityExponent)
-        val dux = dxPx * tuning.gain * accel
-        val duy = dyPx * tuning.gain * accel
-        virtX = clampVirt(virtX + dux)
-        virtY = clampVirt(virtY + duy)
-        velX = dux; velY = duy
-        val travel = abs(virtX - VIRT_CENTER) + abs(virtY - VIRT_CENTER)
-        if (travel > maxTravelUnits) maxTravelUnits = travel
+        val travel = hypot((x - downX).toDouble(), (y - downY).toDouble()).toFloat()
+        if (travel > maxTravelPx) maxTravelPx = travel
+        // Travel is tracked even on a throttled (dropped) frame so the
+        // tap/long-press classification stays accurate.
         if (throttled(nowMs)) return emptyList()
         lastEmitMs = nowMs
-        return listOf(TouchEvent.Move(clamp(virtX), clamp(virtY), TouchPhase.Hold))
+        return listOf(TouchEvent.Move(mapX(x), mapY(y), TouchPhase.Hold))
     }
 
-    /** Called periodically while finger is down so a stationary long-press can fire. */
+    /** Called periodically while the finger is down so a stationary
+     *  long-press can fire before the up. */
     fun onTick(nowMs: Long): List<TouchEvent> {
         if (!down || longPressed || edgeConsumed) return emptyList()
-        if (maxTravelUnits <= tuning.tapSlopUnits &&
+        if (maxTravelPx <= tuning.tapSlopUnits &&
             nowMs - downAtMs >= tuning.longPressMs
         ) {
             longPressed = true
@@ -185,37 +139,19 @@ class SwipeEngine(
         if (!down) return emptyList()
         down = false
         if (edgeConsumed) { edgeConsumed = false; return emptyList() }
-        // Tap is appended BEFORE the terminal Move(Release) so that the
-        // Release frame is always the *last* event of the gesture (the spec
-        // contract: callers replay the stream and the Release must close it,
-        // whether or not a Tap classification preceded it).
+        // Tap is appended BEFORE the terminal Release so the Release frame is
+        // always the last event of the gesture (callers replay the stream and
+        // the Release must close it).
         val out = ArrayList<TouchEvent>()
-        val isTap = maxTravelUnits <= tuning.tapSlopUnits &&
+        val isTap = maxTravelPx <= tuning.tapSlopUnits &&
             nowMs - downAtMs < tuning.longPressMs
         if (isTap && !longPressed) out += TouchEvent.Tap
-        out += TouchEvent.Move(clamp(virtX), clamp(virtY), TouchPhase.Release)
-        // Begin inertia only on a real flick (had recent velocity, moved past slop).
-        if (!longPressed && maxTravelUnits > tuning.tapSlopUnits &&
-            (abs(velX) + abs(velY)) > tuning.inertiaMinSpeed
-        ) {
-            inertiaActive = true
-        }
+        out += TouchEvent.Move(mapX(x), mapY(y), TouchPhase.Release)
         return out
     }
 
-    /** Drive after onUp to glide; returns Move(Hold) frames until inertia stops. */
-    fun onInertiaFrame(nowMs: Long): List<TouchEvent> {
-        if (!inertiaActive) return emptyList()
-        velX *= tuning.inertiaDecay
-        velY *= tuning.inertiaDecay
-        virtX = clampVirt(virtX + velX)
-        virtY = clampVirt(virtY + velY)
-        if ((abs(velX) + abs(velY)) < tuning.inertiaMinSpeed) {
-            inertiaActive = false
-            return emptyList()
-        }
-        if (throttled(nowMs)) return emptyList()
-        lastEmitMs = nowMs
-        return listOf(TouchEvent.Move(clamp(virtX), clamp(virtY), TouchPhase.Hold))
-    }
+    /** Retained for source compatibility — always empty (no client inertia;
+     *  tvOS computes its own momentum from the absolute sample stream). */
+    @Suppress("UNUSED_PARAMETER")
+    fun onInertiaFrame(nowMs: Long): List<TouchEvent> = emptyList()
 }

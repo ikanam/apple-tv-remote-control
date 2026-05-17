@@ -235,10 +235,10 @@ class AppNavUiTest {
         rule.runOnUiThread { reqState.value = NavRequest(AppDestinations.CONNECT, 1) }
         rule.waitForIdle()
 
-        // First-run proof: STEP-01 eyebrow + first-run hero copy are shown;
-        // the switcher-only eyebrow and the CURRENT badge are GONE (no
-        // switcher overlay, no back button — first-run has neither).
-        rule.onNodeWithText("STEP 01 — DISCOVER").assertIsDisplayed()
+        // First-run proof: the first-run hero copy is shown; the switcher-only
+        // eyebrow and the CURRENT badge are GONE (no switcher overlay, no back
+        // button — first-run has neither, and first-run no longer has an
+        // eyebrow at all).
         rule.onNodeWithText("寻找你的 Apple TV").assertIsDisplayed()
         rule.onAllNodesWithText("SWITCH — SELECT DEVICE").assertCountEquals(0)
         rule.onAllNodesWithText("CURRENT").assertCountEquals(0)

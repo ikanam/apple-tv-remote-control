@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -47,6 +48,7 @@ import dev.atvremote.app.ui.icons.IconChevronDown
 import dev.atvremote.app.ui.icons.IconKeyboard
 import dev.atvremote.app.ui.icons.IconPlayPause
 import dev.atvremote.app.ui.icons.IconPower
+import dev.atvremote.app.ui.icons.IconSettings
 import dev.atvremote.app.ui.icons.IconTV
 import dev.atvremote.app.ui.theme.Brushes
 import dev.atvremote.app.ui.theme.DesignTokens
@@ -88,6 +90,7 @@ fun RemoteScreen(
     keyboardVm: KeyboardViewModel,
     deviceName: String,
     onSwitchDevice: () -> Unit,
+    onOpenSettings: () -> Unit = {},
     tuning: SwipeTuning = SwipeTuning.DEFAULT,
     haptics: Haptics? = null,
     keyboardProbe: suspend () -> String = { "" },
@@ -110,7 +113,10 @@ fun RemoteScreen(
     val overlayVisible = localKbOpen || kb.visible
 
     Box(modifier = modifier.fillMaxSize().background(bg)) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        // Immersive: the background Box is full-bleed (its gradient flows
+        // behind the transparent status bar); only this content column is
+        // statusBarsPadding()-inset so the bar blends in with no flat band.
+        Column(modifier = Modifier.fillMaxSize().statusBarsPadding()) {
 
             // --- top bar — remote.jsx:294-320 -----------------------------
             // remote.jsx:294 padding '14px 16px 6px', `minHeight:44`,
@@ -143,7 +149,27 @@ fun RemoteScreen(
                     IconChevronDown(
                         size = 12.dp,
                         color = DesignTokens.TextMuted50, // rgba(255,255,255,0.5)
-                        strokeWidth = 2.2f,
+                        strokeWidth = 1.4f,
+                    )
+                }
+
+                // settings gear (left) — mirrors the right power circle.
+                // Relocated here from ConnectScreen: settings belong on the
+                // app's main screen. 32dp circle, opens SwipeTuningScreen.
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.CenterStart)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(Color(0xFF1A1A1C)) // Recolor (owner): flat button bg
+                        .clickable(role = Role.Button, onClick = onOpenSettings)
+                        .semantics { contentDescription = "Settings" },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    IconSettings(
+                        size = 16.dp,
+                        color = Color(0xFFFEFEFE), // Recolor (owner)
+                        strokeWidth = 1.2f,
                     )
                 }
 
@@ -155,7 +181,7 @@ fun RemoteScreen(
                         .align(Alignment.CenterEnd)
                         .size(32.dp)
                         .clip(CircleShape)
-                        .background(DesignTokens.ControlSurface06)
+                        .background(Color(0xFF1A1A1C)) // Recolor (owner): flat button bg
                         // pointerInput(Unit) captures remoteVm/haptics for the
                         // gesture coroutine's life (no rememberUpdatedState):
                         // safe ONLY because AppNav/MainActivity pass stable
@@ -171,7 +197,8 @@ fun RemoteScreen(
                 ) {
                     IconPower(
                         size = 16.dp,
-                        color = Color.White.copy(alpha = 0.75f), // remote.jsx:313
+                        color = Color(0xFFFEFEFE), // Recolor (owner)
+                        strokeWidth = 1.2f,
                     )
                 }
             }
@@ -237,7 +264,7 @@ fun RemoteScreen(
                         RemoteButton(
                             onClick = { remoteVm.menu() },
                             contentDescription = "Back",
-                        ) { IconBack(size = 20.dp, strokeWidth = 2f) }
+                        ) { IconBack(size = 20.dp, strokeWidth = 1.2f) }
 
                         RemoteButton(
                             onClick = { remoteVm.playPause() },
@@ -251,7 +278,7 @@ fun RemoteScreen(
                             onClick = { if (kbReady) localKbOpen = true },
                             contentDescription = "Keyboard",
                             modifier = Modifier.alpha(if (kbReady) 1f else 0.4f),
-                        ) { IconKeyboard(size = 20.dp, strokeWidth = 1.8f) }
+                        ) { IconKeyboard(size = 20.dp, strokeWidth = 1.2f) }
                     }
 
                     // right column
@@ -263,7 +290,7 @@ fun RemoteScreen(
                         RemoteButton(
                             onClick = { remoteVm.home() },
                             contentDescription = "TV/Home",
-                        ) { IconTV(size = 20.dp, strokeWidth = 2f) }
+                        ) { IconTV(size = 20.dp, strokeWidth = 1.2f) }
 
                         // spans rows 2-3 (172 == 80 + 12 + 80); vertically
                         // centered against the left column's bottom two rows.
@@ -280,7 +307,6 @@ fun RemoteScreen(
         // --- KeyboardOverlay — remote.jsx:367 (composited on top) ----------
         if (overlayVisible) {
             KeyboardOverlay(
-                deviceName = deviceName,
                 text = kb.text,
                 onTextChange = { keyboardVm.setText(it) },
                 // 完成: clear the local toggle only. If the ATV still has a

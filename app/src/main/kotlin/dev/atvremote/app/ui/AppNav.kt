@@ -1,5 +1,8 @@
 package dev.atvremote.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -8,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import dev.atvremote.app.conn.MulticastLockHolder
 import dev.atvremote.app.conn.UiConnectionState
 import dev.atvremote.app.ui.connect.ConnectScreen
@@ -178,6 +182,20 @@ fun AppNav(
             }
         }
 
+        // System back: TUNING and switcher-overlay CONNECT are sub-screens —
+        // pop them here instead of letting the Activity finish (the nav is a
+        // single `dest` state with no back stack, so an unhandled back exits
+        // the app). First-run CONNECT and REMOTE are roots → handler disabled,
+        // default (exit) behavior preserved. Both sub-screens are entered FROM
+        // REMOTE (settings gear / device-switcher chip), so back → REMOTE.
+        BackHandler(
+            enabled = dest == AppDestinations.TUNING ||
+                (dest == AppDestinations.CONNECT && connectMode != null),
+        ) {
+            connectMode = null
+            dest = AppDestinations.REMOTE
+        }
+
         val banner = when (connectionState) {
             is UiConnectionState.Reconnecting -> "Reconnecting…"
             is UiConnectionState.Connecting -> "Connecting…"
@@ -187,6 +205,14 @@ fun AppNav(
             else -> null
         }
 
+        // Immersive edge-to-edge: MainActivity calls enableEdgeToEdge() and
+        // themes.xml makes the system bars transparent. Each screen draws its
+        // OWN background full-bleed (so the screen's color/gradient flows
+        // behind the transparent status bar) and applies statusBarsPadding()
+        // to its *content* only — so there is no flat themed band, the bar is
+        // truly immersive, yet content never sits under it. This wrapper is a
+        // plain pass-through (no bg, no inset) so it can't create a seam.
+        Box(modifier = Modifier.fillMaxSize()) {
         when (dest) {
             // HeroScreen (+ Trackpad/DpadRow/ButtonRow) is replaced by the
             // Claude-Design RemoteScreen. KeyboardOverlay + the device-switcher
@@ -201,6 +227,7 @@ fun AppNav(
                     connectMode = ConnectMode(currentId = connectedDeviceId)
                     dest = AppDestinations.CONNECT
                 },
+                onOpenSettings = { dest = AppDestinations.TUNING },
                 tuning = dev.atvremote.app.swipe.SwipeTuning.DEFAULT,
                 haptics = haptics,
                 keyboardProbe = keyboardProbe,
@@ -217,12 +244,6 @@ fun AppNav(
                     multicastLock.acquire()
                     onDispose { multicastLock.release() }
                 }
-                // I1: each WifiStatus call is a main-thread WifiManager binder
-                // round-trip. `remember` (un-keyed, like the multicast
-                // DisposableEffect above) evaluates it exactly ONCE per CONNECT
-                // entry, never per recomposition. Informational + Wi-Fi rarely
-                // changes within a Connect visit, so once-per-visit is correct.
-                val (ssid, localIp) = remember { wifiInfo() }
                 val overlay = connectMode
                 ConnectScreen(
                     devices = disc.devices,
@@ -243,13 +264,11 @@ fun AppNav(
                     } else {
                         null
                     },
-                    onOpenSettings = { dest = AppDestinations.TUNING },
-                    ssid = ssid,
-                    localIp = localIp,
                     onManualAdd = { d -> onSelectDevice(DiscoveredDevice(d, paired = false)) },
                 )
             }
             AppDestinations.TUNING -> dev.atvremote.app.ui.tuning.SwipeTuningScreen()
+        }
         }
     }
 }

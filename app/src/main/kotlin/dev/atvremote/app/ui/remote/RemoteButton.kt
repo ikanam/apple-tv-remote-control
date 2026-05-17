@@ -77,11 +77,9 @@ fun RemoteButton(
         label = "btnGlow",
     )
 
-    val tint = if (on) {
-        DesignTokens.AccentActiveText // #cfdaff
-    } else {
-        Color.White.copy(alpha = 0.78f) // rgba(255,255,255,0.78)
-    }
+    // Recolor (owner): icon color is flat #FEFEFE in all states; press is
+    // conveyed by scale + the blue glow ring drawn below.
+    val tint = Color(0xFFFEFEFE)
 
     Box(
         modifier = modifier

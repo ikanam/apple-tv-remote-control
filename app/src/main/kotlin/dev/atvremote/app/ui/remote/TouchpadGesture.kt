@@ -3,6 +3,7 @@ package dev.atvremote.app.ui.remote
 import dev.atvremote.app.swipe.SwipeEngine
 import dev.atvremote.app.swipe.TouchEvent
 import dev.atvremote.protocol.RemoteButton
+import dev.atvremote.protocol.TouchPhase
 import kotlin.math.hypot
 
 /**
@@ -26,8 +27,9 @@ import kotlin.math.hypot
  *    while unclassified and **discarded** on a tap classification (I1: a slow
  *    in-zone press can no longer emit a `LongPress` *and* a zone press).
  *  - **Drag** (path length exceeds slop): delivers the [SwipeEngine] stream
- *    (the buffered `Move(Press)` + subsequent `Move(Hold)`/terminal
- *    `Move(Release)` + inertia) via [Outcome.events] and **zero** direction.
+ *    (buffered `Move(Press)` + drag/inertia `Move(Hold)` frames, **closed by
+ *    a terminal `Move(Release)` as the very last event**) via [Outcome.events]
+ *    and **zero** direction.
  *
  * Termination is guaranteed exactly once: on a normal up **or** a cancel
  * (pointer consumed by an ancestor / composable left composition mid-gesture)
@@ -131,8 +133,9 @@ internal class TouchpadGesture(
      *  - **tap** → discard buffered engine events, drive `engine.onUp` (so the
      *    engine's own bookkeeping closes — its Tap/Release are dropped), fire
      *    exactly the [zoneFor] direction.
-     *  - **drag** → flush buffered + the engine's terminal `Move(Release)` +
-     *    inertia frames; no direction.
+     *  - **drag** → flush buffered, then the inertia glide `Move(Hold)`
+     *    frames, then the terminal `Move(Release)` LAST (the stream always
+     *    ends finger-up); no direction.
      */
     fun onUp(x: Float, y: Float, uptimeMs: Long): Outcome {
         if (!active) return Outcome.NONE
@@ -143,15 +146,33 @@ internal class TouchpadGesture(
             val out = ArrayList<TouchEvent>()
             if (buffered.isNotEmpty()) { out += buffered }
             out += tick
-            out += up
-            // Inertia glide (only the engine starts it on a real flick).
+            // Hold the engine's terminal Move(Release) back: the inertia
+            // glide must be emitted FIRST and the Release LAST so the stream
+            // always ends finger-up. The previous order (Release, then
+            // inertia Move(Hold) frames — onInertiaFrame never closes with a
+            // Release) left the device's virtual finger stuck "down" after
+            // any flick (slow drags don't arm inertia → intermittent).
+            val release = up.lastOrNull {
+                it is TouchEvent.Move && it.phase == TouchPhase.Release
+            } as TouchEvent.Move?
+            out += up.filterNot { it === release }
             var n = uptimeMs + INERTIA_FRAME_MS
             var guard = 0
+            var lastGlide: TouchEvent.Move? = null
             while (engine.inertiaActive && guard < INERTIA_MAX_FRAMES) {
-                out += engine.onInertiaFrame(n)
+                val frame = engine.onInertiaFrame(n)
+                out += frame
+                (frame.lastOrNull() as? TouchEvent.Move)?.let { lastGlide = it }
                 n += INERTIA_FRAME_MS
                 guard++
             }
+            // Terminal Release LAST — at the glide-final position (no
+            // snap-back); fall back to the lift-position Release when no
+            // inertia ran (a plain slow drag).
+            val terminal = lastGlide
+                ?.let { TouchEvent.Move(it.x, it.y, TouchPhase.Release) }
+                ?: release
+            if (terminal != null) out += terminal
             buffered.clear()
             return Outcome(events = out)
         }

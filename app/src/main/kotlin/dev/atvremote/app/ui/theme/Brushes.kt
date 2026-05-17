@@ -87,16 +87,8 @@ object Brushes {
      * #08090c outer stop reaches the bottom corners — visually matching the
      * top-lit vignette. Documented per spec.
      */
-    fun remoteScreenBackground(): Brush = cssRadial(
-        fx = 0.5f, fy = 0.0f,
-        colors = listOf(
-            DesignTokens.RemoteBgStart,
-            DesignTokens.RemoteBgMid,
-            DesignTokens.RemoteBgEnd,
-        ),
-        stops = listOf(0.0f, 0.60f, 1.0f),
-        radiusOf = { size, _ -> size.width * 1.2f },
-    )
+    // Recolor (owner): RemoteScreen background is pure black.
+    fun remoteScreenBackground(): Brush = SolidColor(Color(0xFF000000))
 
     /** Connect screen bg — connect.jsx:128: solid `#0e1014`. */
     fun connectScreenBackground(): Brush =
@@ -108,15 +100,8 @@ object Brushes {
      * Touchpad base disk — remote.jsx:63
      * `radial-gradient(circle at 35% 30%, #2a2e38 0%, #181a20 60%, #0f1115 100%)`.
      */
-    fun touchpadDisk(): Brush = cssRadial(
-        fx = 0.35f, fy = 0.30f,
-        colors = listOf(
-            DesignTokens.TouchpadDiskStart,
-            DesignTokens.TouchpadDiskMid,
-            DesignTokens.TouchpadDiskEnd,
-        ),
-        stops = listOf(0.0f, 0.60f, 1.0f),
-    )
+    // Recolor (owner): trackpad surface = the flat button color #1A1A1C.
+    fun touchpadDisk(): Brush = SolidColor(Color(0xFF1A1A1C))
 
     /**
      * Touchpad outer ring glow — remote.jsx:51
@@ -135,46 +120,27 @@ object Brushes {
 
     /** Center OK idle — remote.jsx:117
      *  `radial-gradient(circle at 40% 35%, #1f232b, #0d1015)`. */
-    fun centerOkIdle(): Brush = cssRadial(
-        fx = 0.40f, fy = 0.35f,
-        colors = listOf(
-            DesignTokens.CenterOkIdleStart,
-            DesignTokens.CenterOkIdleEnd,
-        ),
-    )
+    // Recolor (owner): confirm/OK button — #27282B (owner-picked), lighter
+    // than the #1A1A1C buttons so it reads as the primary action.
+    fun centerOkIdle(): Brush = SolidColor(Color(0xFF27282B))
 
     /** Center OK active — remote.jsx:116
      *  `radial-gradient(circle at 40% 35%, #2c3956, #1a2236)` (+ blue inset
      *  glow drawn separately as a border/shadow by the screen task). */
-    fun centerOkActive(): Brush = cssRadial(
-        fx = 0.40f, fy = 0.35f,
-        colors = listOf(
-            DesignTokens.CenterOkActiveStart,
-            DesignTokens.CenterOkActiveEnd,
-        ),
-    )
+    // Recolor (owner): confirm/OK pressed — a touch lighter than #27282B.
+    fun centerOkActive(): Brush = SolidColor(Color(0xFF34353A))
 
     // --- Round button -----------------------------------------------------
 
     /** Round button idle — remote.jsx:142
      *  `radial-gradient(circle at 35% 30%, #232730, #14171d)`. */
-    fun roundButtonIdle(): Brush = cssRadial(
-        fx = 0.35f, fy = 0.30f,
-        colors = listOf(
-            DesignTokens.RoundButtonIdleStart,
-            DesignTokens.RoundButtonIdleEnd,
-        ),
-    )
+    // Recolor (owner): remote buttons (except confirm) are flat #1A1A1C;
+    // press = scale + the blue glow ring drawn by RemoteButton.
+    fun roundButtonIdle(): Brush = SolidColor(Color(0xFF1A1A1C))
 
     /** Round button active — remote.jsx:141
      *  `radial-gradient(circle at 35% 30%, #2c3956, #1a2236)`. */
-    fun roundButtonActive(): Brush = cssRadial(
-        fx = 0.35f, fy = 0.30f,
-        colors = listOf(
-            DesignTokens.RoundButtonActiveStart,
-            DesignTokens.RoundButtonActiveEnd,
-        ),
-    )
+    fun roundButtonActive(): Brush = SolidColor(Color(0xFF1A1A1C))
 
     /**
      * VolumePill base — remote.jsx:197
@@ -182,13 +148,8 @@ object Brushes {
      * the idle round button, different center). Exposed so T2's VolumePill
      * doesn't re-derive it.
      */
-    fun volumePill(): Brush = cssRadial(
-        fx = 0.35f, fy = 0.20f,
-        colors = listOf(
-            DesignTokens.RoundButtonIdleStart,
-            DesignTokens.RoundButtonIdleEnd,
-        ),
-    )
+    // Recolor (owner): volume pill matches the flat button color #1A1A1C.
+    fun volumePill(): Brush = SolidColor(Color(0xFF1A1A1C))
 
     // --- TV logo ----------------------------------------------------------
 

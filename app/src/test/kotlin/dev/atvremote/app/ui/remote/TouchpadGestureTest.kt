@@ -110,10 +110,33 @@ class TouchpadGestureTest {
             "exactly one terminal Move(Release) must close a drag: $all",
         )
         assertTrue(
-            all.indexOfLast { it is TouchEvent.Move && it.phase == TouchPhase.Release } == all.size - 1 ||
-                all.drop(all.indexOfFirst { it is TouchEvent.Move && it.phase == TouchPhase.Release } + 1)
-                    .all { it is TouchEvent.Move && it.phase == TouchPhase.Hold },
-            "Release must terminate the gesture (only inertia Holds may follow): $all",
+            all.last().let { it is TouchEvent.Move && it.phase == TouchPhase.Release },
+            "Release must be the LAST event of a drag — a trailing inertia " +
+                "Move(Hold) leaves the device's virtual finger stuck down: $all",
+        )
+    }
+
+    // --- regression: a flick must END with Release, not an inertia Hold ---
+    // Bug: a fast swipe armed SwipeEngine inertia; TouchpadGesture.onUp
+    // appended the engine's Move(Release) and THEN the inertia Move(Hold)
+    // frames, and onInertiaFrame never emits a closing Release — so the LAST
+    // event tvOS saw was a Hold ⇒ the virtual finger stayed "down" (the UI
+    // was stuck pressed). Slow drags don't arm inertia ⇒ intermittent.
+    @Test fun flickGestureEndsWithReleaseNotInertiaHold() {
+        val e = engine()
+        val g = gesture(e)
+        val all = ArrayList<TouchEvent>()
+        fun apply(o: TouchpadGesture.Outcome) { all += o.events }
+        apply(g.onDown(120f, 120f, 0L))
+        // Fast flick → arms SwipeEngine inertia on the (normal, NOT cancel) up.
+        apply(g.onMove(180f, 120f, 60f, 0f, 4L))
+        apply(g.onMove(260f, 120f, 80f, 0f, 8L))
+        apply(g.onUp(300f, 120f, 12L))
+        assertEquals(1, all.releases().size, "exactly one Release: $all")
+        assertTrue(
+            all.last().let { it is TouchEvent.Move && it.phase == TouchPhase.Release },
+            "a flick must END with the Release; a trailing inertia Hold leaves " +
+                "tvOS's virtual finger stuck down: $all",
         )
     }
 

@@ -59,7 +59,7 @@ fun VolumePill(
             cd = "Volume Up",
             onTap = onUp,
             modifier = Modifier.fillMaxWidth().weight(1f),
-        ) { tint -> IconPlus(size = 22.dp, color = tint, strokeWidth = 2f) }
+        ) { tint -> IconPlus(size = 22.dp, color = tint, strokeWidth = 1.2f) }
 
         // divider — remote.jsx:203 height 1, rgba(255,255,255,0.05).
         Box(
@@ -73,7 +73,7 @@ fun VolumePill(
             cd = "Volume Down",
             onTap = onDown,
             modifier = Modifier.fillMaxWidth().weight(1f),
-        ) { tint -> IconMinus(size = 22.dp, color = tint, strokeWidth = 2f) }
+        ) { tint -> IconMinus(size = 22.dp, color = tint, strokeWidth = 1.2f) }
     }
 }
 
@@ -86,11 +86,8 @@ private fun androidx.compose.foundation.layout.ColumnScope.Half(
 ) {
     val interaction = remember { MutableInteractionSource() }
     val pressed by interaction.collectIsPressedAsState()
-    val tint = if (pressed) {
-        DesignTokens.AccentActiveText // #cfdaff
-    } else {
-        Color.White.copy(alpha = 0.78f)
-    }
+    // Recolor (owner): flat #FEFEFE icons (press still tints the half bg blue).
+    val tint = Color(0xFFFEFEFE)
     Box(
         modifier = modifier
             .background(

@@ -48,7 +48,8 @@ import kotlin.math.hypot
  * down, identical to the JSX `clientY` math). [width] is the touchpad box
  * width in px (`rect.width`).
  *
- *  - `r = hypot(dx,dy)`; `innerR = width * 0.18`
+ *  - `r = hypot(dx,dy)`; `innerR = width * 0.33` (matches the enlarged center
+ *    OK circle so the whole visible button taps as Select)
  *  - `r < innerR`            → [RemoteButton.Select]   (the center "OK")
  *  - else `ang = atan2(dy,dx)·180/π`:
  *      - `[-45, 45)`   → [RemoteButton.Right]
@@ -61,7 +62,7 @@ import kotlin.math.hypot
  */
 internal fun zoneFor(dx: Float, dy: Float, width: Float): RemoteButton {
     val r = hypot(dx, dy)
-    val innerR = width * 0.18f
+    val innerR = width * 0.33f
     if (r < innerR) return RemoteButton.Select
     val ang = atan2(dy, dx) * 180f / Math.PI.toFloat()
     return when {
@@ -228,6 +229,9 @@ fun Touchpad(
                     // never invokes stale lambdas.
                     val w = size.width.toFloat()
                     val h = size.height.toFloat()
+                    // edge zones intentionally KEPT (tuning.edgeZoneFraction):
+                    // a real Siri remote's outer edge is NOT a swipe surface —
+                    // a press there is a directional press, not a drag.
                     val engine = SwipeEngine(tuning, w, h)
                     awaitPointerEventScope {
                         while (true) {
@@ -316,9 +320,20 @@ fun Touchpad(
 
             // --- center OK — remote.jsx:109-123 ---------------------------
             val okPressed = active == RemoteButton.Select
+            // .align(Center): this disk Box has no contentAlignment, so it
+            // defaults to TopStart — without this the 96dp OK lands in the
+            // disk's top-left corner, not dead center. DirectionDots and the
+            // press-glow are parent-sized so they were unaffected, which hid
+            // this until the Touchpad was first seen on the tuning screen.
             Box(
                 modifier = Modifier
-                    .size(96.dp)
+                    .align(Alignment.Center)
+                    // Enlarged confirm/OK button (96dp → 128 → 160dp). The
+                    // outer pad (240dp disk / 260dp ring / dot insets) is
+                    // unchanged; only this center grows. zoneFor's innerR
+                    // (width*0.33) matches this so the whole visible OK taps
+                    // as Select.
+                    .size(160.dp)
                     .scale(okScale)
                     .clip(CircleShape)
                     .background(if (okPressed) okActive else okIdle, CircleShape)

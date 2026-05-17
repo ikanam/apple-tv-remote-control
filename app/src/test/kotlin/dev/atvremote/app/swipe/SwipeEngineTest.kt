@@ -17,13 +17,26 @@ class SwipeEngineTest {
         assertEquals(listOf<TouchEvent>(TouchEvent.Move(500, 500, TouchPhase.Press)), out)
     }
 
-    @Test fun dragEmitsHoldPhaseScaledByGain() {
-        val e = engine()
+    @Test fun dragEmitsHoldAtAbsoluteFingerPosition() {
+        val e = engine() // 1000px pad ⇒ absolute map is identity (clamped)
         e.onDown(500f, 500f, 0L)
-        val out = e.onMove(520f, 500f, nowMs = 16L) // +20px * gain 2.4 ≈ +48 units
+        val out = e.onMove(520f, 500f, nowMs = 16L)
         val mv = out.filterIsInstance<TouchEvent.Move>().single()
         assertEquals(TouchPhase.Hold, mv.phase)
-        assertTrue(mv.x in 540..560, "x was ${mv.x}")
+        // Absolute-linear: the finger is at 520 ⇒ cx=520 (NOT gain-amplified).
+        assertEquals(520, mv.x)
+        assertEquals(500, mv.y)
+    }
+
+    // Regression guard for the on-device root cause (hunt #15): the old
+    // gain(2.4)+recenter(500)+clamp model pinned cx=1000 for any real swipe
+    // (a controlled +440px drag sent x=1000 on 100% of frames). Absolute-
+    // linear must track the finger proportionally and NOT saturate.
+    @Test fun partialSwipeMapsProportionallyNotSaturated() {
+        val e = engine() // 1000px pad
+        e.onDown(300f, 500f, 0L)
+        val mv = e.onMove(700f, 500f, 16L).filterIsInstance<TouchEvent.Move>().single()
+        assertEquals(700, mv.x, "must be the absolute finger pos, not clamped 1000")
         assertEquals(500, mv.y)
     }
 
@@ -87,19 +100,21 @@ class SwipeEngineTest {
                 .let { (it as TouchEvent.DirectionalStep).button })
     }
 
-    @Test fun inertiaGeneratesDecayingMovesAfterFlick() {
+    // No client-side inertia: tvOS computes its own momentum from the
+    // absolute (cx,cy,_ns) stream, exactly like a physical Siri remote and
+    // pyatv's swipe(). The flick ends at the terminal Release; onInertiaFrame
+    // is inert.
+    @Test fun noClientInertiaTvOwnsMomentum() {
         val e = engine()
         e.onDown(100f, 500f, 0L)
         e.onMove(300f, 500f, 8L)
         e.onMove(500f, 500f, 16L)
         val released = e.onUp(500f, 500f, 24L)
-        assertTrue(released.last() is TouchEvent.Move &&
-            (released.last() as TouchEvent.Move).phase == TouchPhase.Release)
-        val f1 = e.onInertiaFrame(nowMs = 32L)
-        val f2 = e.onInertiaFrame(nowMs = 40L)
-        assertTrue(f1.isNotEmpty())
-        var ticks = 0
-        while (e.inertiaActive && ticks < 200) { e.onInertiaFrame(nowMs = 48L + ticks * 8L); ticks++ }
+        val last = released.last()
+        assertTrue(last is TouchEvent.Move && last.phase == TouchPhase.Release)
+        assertEquals(500, (last as TouchEvent.Move).x) // absolute final pos
         assertTrue(!e.inertiaActive)
+        assertTrue(e.onInertiaFrame(nowMs = 32L).isEmpty())
+        assertTrue(e.onInertiaFrame(nowMs = 40L).isEmpty())
     }
 }

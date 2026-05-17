@@ -23,8 +23,8 @@ import dev.atvremote.protocol.connection.CommandChannel
  * not an internal mutable that start() resets. start()/stop() have been removed — they sent
  * per-gesture _touchStart/_touchStop which pyatv never does during a session.
  *
- * Wire (unchanged):
- *   _hidT content { "_ns":<ns since touchStart>, "_tFg":1, "_cx":x, "_cy":y, "_tPh":phase }
+ * Wire — field ORDER is pyatv/real-device exact (see `touch()`):
+ *   _hidT content { "_ns":<ns since touchStart>, "_tFg":1, "_cx":x, "_tPh":phase, "_cy":y }
  *         → `hid_event` (L294) → `_send_event` (L300) → sendEvent (_t=1, fire-and-forget)
  *   x,y clamped to [0,1000]; ~16ms step interval for swipes.
  *
@@ -41,14 +41,23 @@ internal class TouchTransport(
 
     suspend fun touch(x: Int, y: Int, phase: TouchPhase) {
         val ns = nanoClock() - baseNs
+        // Field ORDER must EXACTLY match the real-device golden
+        // (touch-swipe.json: pyatv 0.17.0 ↔ real 客厅/tvOS 26.5) and pyatv
+        // api.py hid_event: `_ns, _tFg, _cx, _tPh, _cy` — `_tPh` BETWEEN `_cx`
+        // and `_cy`. Companion is OPACK (insertion-ordered) and real tvOS's
+        // _hidT decoder is order-sensitive for the _cx/_tPh/_cy triple, so the
+        // earlier `_cx,_cy,_tPh` made tvOS mis-associate coordinate vs phase →
+        // erratic, start-position-dependent swipe direction. The golden
+        // comparator comparing decoded maps by key (order-insensitive) is why
+        // this passed CI; TouchTransportTest now pins the exact key order.
         ch.sendEvent(
             "_hidT",
             mapOf(
                 "_ns" to ns,
                 "_tFg" to 1,
                 "_cx" to clamp(x),
-                "_cy" to clamp(y),
                 "_tPh" to phase.value,
+                "_cy" to clamp(y),
             ),
         )
     }

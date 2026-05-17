@@ -68,7 +68,13 @@ private fun DrawScope.strokePath(
     swPx: Float,
 ) {
     val s = size.minDimension / VIEW
-    drawScaledPath(path, s, color, Stroke(width = swPx * s, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    // swPx is an SVG-style stroke width in the 24-unit viewBox. drawScaledPath
+    // draws inside scale(s, s), which already scales the stroke by `s` (→ a
+    // crisp `swPx/24 * iconSize` px line that grows with the icon). Do NOT
+    // pre-multiply by `s` here: `swPx * s` then scaled again = `swPx * s²`,
+    // i.e. every icon was ~s× too thick (≈3× at 20dp) and inconsistent across
+    // icon sizes — which is why per-call strokeWidth tuning never looked right.
+    drawScaledPath(path, s, color, Stroke(width = swPx, cap = StrokeCap.Round, join = StrokeJoin.Round))
 }
 
 private fun DrawScope.fillPath(path: Path, color: Color) {

@@ -20,10 +20,11 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * TDD for the Touchpad discrete-tap zone hit-test. The pure [zoneFor] function
- * is the exact port of remote.jsx:15-34 (atan2 / `width*0.18` inner radius);
- * these cases pin every boundary the design defines so a later refactor of the
- * Compose gesture wiring cannot silently drift the mapping.
+ * TDD for the Touchpad discrete-tap zone hit-test. [zoneFor] ports
+ * remote.jsx:15-34 (atan2 zones); the inner Select radius was enlarged from
+ * the original `width*0.18` to `width*0.33` to match the bigger center OK
+ * button. These cases pin every boundary so a later refactor of the Compose
+ * gesture wiring cannot silently drift the mapping.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -32,8 +33,9 @@ class TouchpadZoneTest {
     @get:Rule val rule = createComposeRule()
 
     private val w = 240f
-    // remote.jsx:22 — innerR = width * 0.18 ⇒ 43.2 for a 240 box.
-    private val innerR = w * 0.18f
+    // innerR = width * 0.33 ⇒ 79.2 for a 240 box (enlarged from the original
+    // 0.18 so the Select zone matches the bigger 160dp center OK button).
+    private val innerR = w * 0.33f
 
     // --- center (Select) --------------------------------------------------
 

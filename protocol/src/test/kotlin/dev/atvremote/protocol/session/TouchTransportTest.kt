@@ -48,6 +48,29 @@ class TouchTransportTest {
     }
 
     /**
+     * Regression: `_hidT` field ORDER must EXACTLY match the real-device
+     * golden (`goldentrace/touch-swipe.json`, pyatv 0.17.0 ↔ real 客厅 /
+     * tvOS 26.5) and pyatv api.py hid_event: `_ns, _tFg, _cx, _tPh, _cy`.
+     * Companion is OPACK (insertion-ordered) and real tvOS's _hidT decoder is
+     * order-sensitive for the _cx/_tPh/_cy triple; the prior `_cx,_cy,_tPh`
+     * mis-associated coordinate vs phase → erratic, start-position-dependent
+     * swipe direction. The golden comparator compares decoded maps by key
+     * (order-insensitive), so it never caught this — this test pins the order.
+     */
+    @Test fun hidTKeyOrderMatchesRealDeviceGoldenAndPyatv() = runTest {
+        val fake = FakeProtocol()
+        val t = TouchTransport(fake, baseNs = 0L) { 0L }
+        t.touch(100, 500, TouchPhase.Hold)
+        val (_, c) = fake.sentEvents.last()
+        assertEquals(
+            listOf("_ns", "_tFg", "_cx", "_tPh", "_cy"),
+            c.keys.toList(),
+            "OPACK _hidT key order must match pyatv/real-device exactly " +
+                "(_tPh between _cx and _cy)",
+        )
+    }
+
+    /**
      * swipe() emits ONLY _hidT (sendEvent) frames — Press, then Hold*, then Release.
      * NO _touchStart/_touchStop per gesture (pyatv swipe() is purely hid_event calls).
      */
