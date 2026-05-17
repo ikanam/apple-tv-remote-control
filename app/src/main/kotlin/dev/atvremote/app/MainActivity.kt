@@ -259,10 +259,13 @@ class MainActivity : ComponentActivity() {
                 haptics = graph.haptics,
                 keyboardProbe = { cm.currentSession()?.textGet() ?: "" },
                 // Real (or degraded-null) Wi-Fi info for the status pill.
-                // Informational + read-only; recomputed per composition is fine
-                // (WifiStatus is stateless and defensive).
-                ssid = graph.wifiStatus.ssid(),
-                localIp = graph.wifiStatus.localIpv4(),
+                // Passed as a lambda — NOT evaluated here. Each WifiStatus call
+                // is a main-thread WifiManager binder round-trip; evaluating it
+                // in this per-composition setContent body would re-hit the
+                // binder on every recomposition (every trackpad-drag / banner
+                // frame) though it is only consumed in AppNav's CONNECT branch.
+                // AppNav invokes this exactly once per CONNECT entry.
+                wifiInfo = { graph.wifiStatus.ssid() to graph.wifiStatus.localIpv4() },
             )
         }
     }

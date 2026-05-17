@@ -4,6 +4,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.test.core.app.ApplicationProvider
@@ -185,5 +187,60 @@ class AppNavUiTest {
         rule.onNodeWithText("CURRENT").performClick()
         rule.waitForIdle()
         rule.onNodeWithTag("trackpad").assertExists()
+    }
+
+    // Locks the subtle overlay-vs-fresh-pair behavior (review #1): a
+    // MainActivity-style navigateTo(CONNECT) — i.e. driving requestedDestination
+    // to a NavRequest(CONNECT, seq) the way MainActivity's async pair/connect
+    // path does — ALWAYS lands CONNECT in *first-run* mode, even after the
+    // Remote chip set switcher-overlay mode. Proves a MainActivity-driven
+    // CONNECT is never switcher-overlay and a stale connectMode is reset by
+    // AppNav's LaunchedEffect(requestedDestination).
+    @Test fun mainActivityDrivenConnectIsFirstRunAndClearsStaleSwitcherOverlay() {
+        // Start on REMOTE (reconnectable) so we can first enter switcher-
+        // overlay via the chip, then drive a MainActivity nav to CONNECT.
+        val reqState = mutableStateOf<NavRequest?>(null)
+        rule.setContent {
+            AppNav(
+                discoveryVm = discoveryVm(), // contains device id="id1"
+                remoteVm = remoteVm(),
+                keyboardVm = keyboardVm(),
+                connectionState = UiConnectionState.Connected(device),
+                deviceName = "Living Room",
+                connectedDeviceId = "id1",
+                pairingDeviceName = null,
+                initialDevices = false, // reconnectable → start on REMOTE
+                onSelectDevice = {},
+                pairingState = null,
+                onSubmitPin = {},
+                onPairCancel = {},
+                requestedDestination = reqState.value,
+                multicastLock = lock(),
+                haptics = null,
+                keyboardProbe = { "" },
+            )
+        }
+        rule.waitForIdle()
+
+        // Chip → CONNECT in switcher-overlay mode (CURRENT badge + switch
+        // eyebrow), so connectMode is non-null and would be stale if not reset.
+        rule.onNodeWithText("Living Room").performClick()
+        rule.waitForIdle()
+        rule.onNodeWithText("SWITCH — SELECT DEVICE").assertIsDisplayed()
+        rule.onNodeWithText("CURRENT").assertIsDisplayed()
+
+        // MainActivity-style navigateTo(CONNECT): a NavRequest(CONNECT, seq).
+        // LaunchedEffect(requestedDestination) must apply dest=CONNECT AND
+        // clear connectMode → first-run mode.
+        rule.runOnUiThread { reqState.value = NavRequest(AppDestinations.CONNECT, 1) }
+        rule.waitForIdle()
+
+        // First-run proof: STEP-01 eyebrow + first-run hero copy are shown;
+        // the switcher-only eyebrow and the CURRENT badge are GONE (no
+        // switcher overlay, no back button — first-run has neither).
+        rule.onNodeWithText("STEP 01 — DISCOVER").assertIsDisplayed()
+        rule.onNodeWithText("寻找你的 Apple TV").assertIsDisplayed()
+        rule.onAllNodesWithText("SWITCH — SELECT DEVICE").assertCountEquals(0)
+        rule.onAllNodesWithText("CURRENT").assertCountEquals(0)
     }
 }

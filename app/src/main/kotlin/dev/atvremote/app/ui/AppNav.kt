@@ -62,8 +62,8 @@ internal fun initialDestination(hasReconnectableLast: Boolean): AppDestinations 
  * A navigation request hoisted from MainActivity (which owns the async
  * pair/connect decisions) to AppNav (which owns `dest`). [seq] makes two
  * consecutive requests for the SAME [dest] distinct so the applying
- * `LaunchedEffect` re-fires (e.g. pair completes → HERO, user opens Devices,
- * a second pair completes → HERO again). MainActivity increments [seq] per
+ * `LaunchedEffect` re-fires (e.g. pair completes → REMOTE, user opens CONNECT,
+ * a second pair completes → REMOTE again). MainActivity increments [seq] per
  * request; equality therefore changes even when [dest] repeats.
  */
 data class NavRequest(val dest: AppDestinations, val seq: Int)
@@ -77,10 +77,11 @@ data class NavRequest(val dest: AppDestinations, val seq: Int)
  *   first-run/post-cancel path.
  * - non-null ⇒ CONNECT renders in **switcher-overlay mode**: reached from the
  *   Remote device-switcher chip; `currentId` = the connected device's id (its
- *   card shows the `CURRENT` badge + accent border), and `onClose` is wired to
- *   `navigateTo(REMOTE)` so back / tapping the current device returns to the
- *   remote. Selecting a *different* device still goes through the normal
- *   `onSelectDevice` (S5 connect-or-pair) path.
+ *   card shows the `CURRENT` badge + accent border), and `onClose` is an
+ *   in-composition `{ connectMode = null; dest = REMOTE }` so back / tapping
+ *   the current device returns to the remote (it does NOT go through the
+ *   hoisted MainActivity nav signal). Selecting a *different* device still
+ *   goes through the normal `onSelectDevice` (S5 connect-or-pair) path.
  */
 @JvmInline
 value class ConnectMode(val currentId: String?)
@@ -117,9 +118,15 @@ value class ConnectMode(val currentId: String?)
  *
  * The Wi-Fi multicast lock ([multicastLock], spec §4) is held by a
  * `DisposableEffect` ONLY while CONNECT is shown (discovery lives there now).
- * [ssid]/[localIp] are the real (or degraded-null) Wi-Fi info from
- * MainActivity's `WifiStatus`. [connectedDeviceId] is the currently-connected
- * device id (used to seed switcher-overlay `currentId`).
+ * [wifiInfo] supplies the real (or degraded-null) `(ssid, localIp)` Wi-Fi info
+ * from MainActivity's `WifiStatus`. It is a lambda (not eagerly-evaluated
+ * `String?` params) deliberately: each call is a main-thread `WifiManager`
+ * binder round-trip, so AppNav invokes it exactly ONCE per CONNECT entry
+ * (`remember` keyed to the CONNECT branch) — never on every recomposition /
+ * trackpad-drag / banner frame. Wi-Fi rarely changes within a single Connect
+ * visit and the value is purely informational, so once-per-visit is correct.
+ * [connectedDeviceId] is the currently-connected device id (used to seed
+ * switcher-overlay `currentId`).
  */
 @Composable
 fun AppNav(
@@ -139,8 +146,7 @@ fun AppNav(
     multicastLock: MulticastLockHolder,
     haptics: dev.atvremote.app.haptics.Haptics?,
     keyboardProbe: suspend () -> String,
-    ssid: String? = null,
-    localIp: String? = null,
+    wifiInfo: () -> Pair<String?, String?> = { null to null },
 ) {
     AtvRemoteTheme {
         var dest by remember {
@@ -150,6 +156,13 @@ fun AppNav(
         // switcher overlay (reached from the Remote chip). Owned by AppNav,
         // NOT part of the MainActivity nav signal — any MainActivity-driven
         // requestedDestination resets it to first-run (see KDoc).
+        //
+        // Note the double-optional: the OUTER `ConnectMode?` being `null`
+        // means "not switcher" (first-run); a NON-null `ConnectMode` means
+        // "switcher overlay", and its inner `currentId` may *itself* be null
+        // (chip opened while somehow not connected) — distinct from the outer
+        // null. So: outer null ⇒ first-run; outer non-null ⇒ switcher (inner
+        // currentId null just means no card gets the CURRENT badge).
         var connectMode by remember { mutableStateOf<ConnectMode?>(null) }
         val disc by discoveryVm.state.collectAsState()
 
@@ -204,6 +217,12 @@ fun AppNav(
                     multicastLock.acquire()
                     onDispose { multicastLock.release() }
                 }
+                // I1: each WifiStatus call is a main-thread WifiManager binder
+                // round-trip. `remember` (un-keyed, like the multicast
+                // DisposableEffect above) evaluates it exactly ONCE per CONNECT
+                // entry, never per recomposition. Informational + Wi-Fi rarely
+                // changes within a Connect visit, so once-per-visit is correct.
+                val (ssid, localIp) = remember { wifiInfo() }
                 val overlay = connectMode
                 ConnectScreen(
                     devices = disc.devices,
